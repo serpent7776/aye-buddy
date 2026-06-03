@@ -113,67 +113,78 @@ unless (-e $claude_json) {
     close $fh;
 }
 
-my @args = (
-    '--clearenv', # must be before any --setenv
-    '--ro-bind', '/usr', '/usr',
-    '--ro-bind', '/etc', '/etc',
-    '--ro-bind-try', '/opt', '/opt',
-    '--ro-bind-try', '/nix', '/nix',
-    '--symlink', 'usr/bin', '/bin',
-    '--symlink', 'usr/lib', '/lib',
-    '--symlink', 'usr/lib64', '/lib64',
-    '--proc', '/proc',
-    '--dev', '/dev',
-    '--tmpfs', '/tmp',
-    '--tmpfs', $home,
-    '--bind', $project_dir, $project_dir,
-    # .git/hooks scripts and .git/config knobs (core.fsmonitor,
-    # core.sshCommand, bang-aliases, etc.) get executed by host git the next
-    # time the user runs anything against the repo outside the sandbox. Keep
-    # them ro so a session can't plant something the host will later run.
-    # Same for submodule git dirs under .git/modules/.
-    '--ro-bind-try', "$project_dir/.git/hooks",   "$project_dir/.git/hooks",
-    '--ro-bind-try', "$project_dir/.git/config",  "$project_dir/.git/config",
-    '--ro-bind-try', "$project_dir/.git/modules", "$project_dir/.git/modules",
-    # ~/.claude is rw because claude actively writes to many subpaths
-    # (sessions/, projects/, todos/, history.jsonl, file-history/, backups/,
-    # caches, telemetry, .credentials.json on OAuth refresh, ...). The
-    # specific paths that would let a sandboxed session inject code into a
-    # later host-side `claude` invocation are ro-overlaid below: hooks in
-    # settings.json, custom slash commands, agent definitions, plugins,
-    # explicit hooks dirs, ~/.claude/scripts/ (the user's personal scripts
-    # referenced by hooks/statusline/etc.), and MCP server configs. Files
-    # that don't exist on launch fall through to rw — create empty
-    # placeholders on the host if you want strict enforcement before any
-    # of these have been set up.
-    '--bind', "$home/.claude", "$home/.claude",
-    '--ro-bind-try', "$home/.claude/settings.json",       "$home/.claude/settings.json",
-    '--ro-bind-try', "$home/.claude/settings.local.json", "$home/.claude/settings.local.json",
-    '--ro-bind-try', "$home/.claude/commands",            "$home/.claude/commands",
-    '--ro-bind-try', "$home/.claude/agents",              "$home/.claude/agents",
-    '--ro-bind-try', "$home/.claude/plugins",             "$home/.claude/plugins",
-    '--ro-bind-try', "$home/.claude/hooks",               "$home/.claude/hooks",
-    '--ro-bind-try', "$home/.claude/scripts",             "$home/.claude/scripts",
-    '--ro-bind-try', "$home/.claude/mcp.json",            "$home/.claude/mcp.json",
-    '--ro-bind-try', "$home/.claude/.mcp.json",           "$home/.claude/.mcp.json",
-    '--bind', $claude_json, $claude_json,
-    '--ro-bind-try', "$home/.gitconfig",       "$home/.gitconfig",
-    '--ro-bind-try', "$home/.config/git",      "$home/.config/git",
-    '--ro-bind-try', "$home/.ssh/config",      "$home/.ssh/config",
-    '--ro-bind-try', "$home/.ssh/known_hosts", "$home/.ssh/known_hosts",
-);
+# Filesystem exposure is declared exactly once, through these helpers: each
+# appends the bwrap bind AND records the matching Landlock path (the
+# sandbox-side dest), so the bwrap mount set and the Landlock ruleset can't
+# drift apart — @ll_rw/@ll_ro are accumulated as a side effect and handed to
+# ll-helper below. ll-helper skips paths it can't open, so mandatory and
+# optional (-try) binds map to the same LL entry. A symlink names no inode of
+# its own, so it gets no Landlock rule.
+my (@args, @ll_rw, @ll_ro);
+sub bind_rw  { push @args, '--bind',        $_[0], $_[1]; push @ll_rw, $_[1] }
+sub bind_ro  { push @args, '--ro-bind',     $_[0], $_[1]; push @ll_ro, $_[1] }
+sub try_ro   { push @args, '--ro-bind-try', $_[0], $_[1]; push @ll_ro, $_[1] }
+sub mount_rw { push @args, $_[0], $_[1];                  push @ll_rw, $_[1] } # --tmpfs/--proc/--dev
+sub link_to  { push @args, '--symlink',     $_[0], $_[1] }
+
+push @args, '--clearenv';   # must come before any --setenv (bwrap is order-sensitive)
+
+bind_ro('/usr', '/usr');
+bind_ro('/etc', '/etc');
+try_ro('/opt', '/opt');
+try_ro('/nix', '/nix');
+link_to('usr/bin',   '/bin');
+link_to('usr/lib',   '/lib');
+link_to('usr/lib64', '/lib64');
+mount_rw('--proc',  '/proc');
+mount_rw('--dev',   '/dev');
+mount_rw('--tmpfs', '/tmp');
+mount_rw('--tmpfs', $home);
+bind_rw($project_dir, $project_dir);
+# .git/hooks scripts and .git/config knobs (core.fsmonitor, core.sshCommand,
+# bang-aliases, etc.) get executed by host git the next time the user runs
+# anything against the repo outside the sandbox. Keep them ro so a session
+# can't plant something the host will later run. Same for submodule git dirs
+# under .git/modules/.
+try_ro("$project_dir/.git/hooks",   "$project_dir/.git/hooks");
+try_ro("$project_dir/.git/config",  "$project_dir/.git/config");
+try_ro("$project_dir/.git/modules", "$project_dir/.git/modules");
+# ~/.claude is rw because claude actively writes to many subpaths (sessions/,
+# projects/, todos/, history.jsonl, file-history/, backups/, caches, telemetry,
+# .credentials.json on OAuth refresh, ...). The specific paths that would let a
+# sandboxed session inject code into a later host-side `claude` invocation are
+# ro-overlaid below: hooks in settings.json, custom slash commands, agent
+# definitions, plugins, explicit hooks dirs, ~/.claude/scripts/ (the user's
+# personal scripts referenced by hooks/statusline/etc.), and MCP server
+# configs. Files that don't exist on launch fall through to rw — create empty
+# placeholders on the host if you want strict enforcement before any of these
+# have been set up.
+bind_rw("$home/.claude", "$home/.claude");
+try_ro("$home/.claude/settings.json",       "$home/.claude/settings.json");
+try_ro("$home/.claude/settings.local.json", "$home/.claude/settings.local.json");
+try_ro("$home/.claude/commands",            "$home/.claude/commands");
+try_ro("$home/.claude/agents",              "$home/.claude/agents");
+try_ro("$home/.claude/plugins",             "$home/.claude/plugins");
+try_ro("$home/.claude/hooks",               "$home/.claude/hooks");
+try_ro("$home/.claude/scripts",             "$home/.claude/scripts");
+try_ro("$home/.claude/mcp.json",            "$home/.claude/mcp.json");
+try_ro("$home/.claude/.mcp.json",           "$home/.claude/.mcp.json");
+bind_rw($claude_json, $claude_json);
+try_ro("$home/.gitconfig",       "$home/.gitconfig");
+try_ro("$home/.config/git",      "$home/.config/git");
+try_ro("$home/.ssh/config",      "$home/.ssh/config");
+try_ro("$home/.ssh/known_hosts", "$home/.ssh/known_hosts");
 
 # Bind the helper in for the in-sandbox `perl` to read it, at the fixed $ll_dest
 # (over the /tmp tmpfs mounted above). RO — the sandbox never writes it.
 if ($use_landlock) {
-    push @args, '--ro-bind', $ll_helper, $ll_dest;
+    bind_ro($ll_helper, $ll_dest);
 }
 
 my $ssh_sock = $ENV{SSH_AUTH_SOCK};
 if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
-    push @args,
-        '--bind', $ssh_sock, '/run/ssh-agent',
-        '--setenv', 'SSH_AUTH_SOCK', '/run/ssh-agent';
+    bind_rw($ssh_sock, '/run/ssh-agent');
+    push @args, '--setenv', 'SSH_AUTH_SOCK', '/run/ssh-agent';
 }
 
 # Reintroduce any required env var
@@ -197,49 +208,15 @@ for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
     push @args, '--setenv', $var, $val if defined $val && length $val;
 }
 
-# Tell ll-helper which paths the Landlock ruleset should permit — a mirror of
-# the bwrap bind set above. Once enforced, everything else is denied, so this
-# must include the synthetic mounts (/tmp, /proc, /dev, the tmpfs $HOME), not
-# just the host paths. Newline-separated; ll-helper skips entries it can't open
-# (mirroring --*-bind-try). The paths resolve inside the sandbox: e.g. "$HOME"
-# is the tmpfs, not the host home, so granting it rw exposes nothing real.
+# Hand ll-helper the permitted paths accumulated by the bind helpers above.
+# Once the ruleset is enforced everything else is denied, so the lists
+# necessarily cover the synthetic mounts (/tmp, /proc, /dev, the tmpfs $HOME)
+# as well as the host paths. Newline-separated. The paths resolve inside the
+# sandbox: e.g. "$HOME" is the tmpfs, not the host home, so granting it rw
+# exposes nothing real. RO entries that nest under an rw path reinforce bwrap's
+# read-only bind where Landlock honours the more-specific rule, and are a
+# harmless no-op where it doesn't (bwrap already pins them read-only).
 if ($use_landlock) {
-    my @ll_rw = (
-        $project_dir,
-        "$home/.claude",
-        $claude_json,
-        '/tmp',
-        $home,
-        '/dev',
-        '/proc',
-    );
-    if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
-        push @ll_rw, '/run/ssh-agent';
-    }
-    # RO mirrors the --ro-bind* set. Several entries nest under rw paths above;
-    # where Landlock honours the more-specific rule this reinforces bwrap's
-    # read-only binds (e.g. .git/hooks, ~/.claude/settings.json), and where it
-    # doesn't it is a harmless no-op — bwrap already pins them read-only.
-    my @ll_ro = (
-        '/usr', '/etc', '/opt', '/nix',
-        "$project_dir/.git/hooks",
-        "$project_dir/.git/config",
-        "$project_dir/.git/modules",
-        "$home/.claude/settings.json",
-        "$home/.claude/settings.local.json",
-        "$home/.claude/commands",
-        "$home/.claude/agents",
-        "$home/.claude/plugins",
-        "$home/.claude/hooks",
-        "$home/.claude/scripts",
-        "$home/.claude/mcp.json",
-        "$home/.claude/.mcp.json",
-        "$home/.gitconfig",
-        "$home/.config/git",
-        "$home/.ssh/config",
-        "$home/.ssh/known_hosts",
-        $ll_dest,
-    );
     push @args,
         '--setenv', 'LL_RW', join("\n", @ll_rw),
         '--setenv', 'LL_RO', join("\n", @ll_ro);
