@@ -1,11 +1,5 @@
 #!/usr/bin/env perl
-# aye-buddy: run claude in a bwrap sandbox. See client.md.
-#
-# Perl (not shell) so it shares an interpreter with ll-helper, the Landlock
-# payload it launches — one language, no build step, runs anywhere bwrap +
-# claude + perl exist. Like ll-helper it stays in pure core Perl: no XS, no
-# CPAN. We never invoke a shell, so argument arrays reach bwrap verbatim with
-# no quoting/word-splitting surface.
+# aye-buddy: run claude in a sandbox.
 
 use strict;
 use warnings;
@@ -19,8 +13,6 @@ use File::Basename qw(dirname);
 sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
 
-# Locate an executable on PATH (replacement for `command -v`). We only need a
-# boolean here; bwrap and claude are resolved by execvp at launch time.
 sub on_path {
     my ($cmd) = @_;
     for my $d (split /:/, $ENV{PATH} // '') {
@@ -34,49 +26,25 @@ for my $cmd (qw(bwrap claude)) {
     on_path($cmd) or fail("required command not found on PATH: $cmd");
 }
 
-# Defense-in-depth helpers shipped alongside this script (see TODO.md):
-#   ll-helper   applies a Landlock ruleset from inside the sandbox, a second
-#               wall behind bwrap's mount namespace (enforced on the real
-#               inode, so /proc magic-links and symlink/TOCTOU tricks don't
-#               help and it survives a namespace escape).
-#   filter.bpf  precompiled seccomp denylist fed to `bwrap --seccomp`, shrinking
-#               the kernel syscall attack surface (no namespace creation, no
-#               module/bpf/kexec/ptrace, ...).
-# Both are optional and independent: if either is missing we warn and fall back
-# to the layers that remain, so aye-buddy keeps working on a fresh checkout.
-#
-# $RealBin is FindBin's symlink-resolved directory of this script, regardless of
-# whether we were found via PATH or a symlink — the equivalent of
-# dirname(readlink -f "$0"). The helpers live next to the installed script.
+# $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
+# The helpers live next to the installed script.
 my $self_dir     = $RealBin;
 my $ll_helper    = "$self_dir/ll-helper";
 my $seccomp_blob = "$self_dir/filter.bpf";
 
-# Where ll-helper is mounted *inside* the sandbox. A fixed neutral path rather
-# than its host location: it doesn't depend on where aye-buddy is installed,
-# doesn't leak the host install path into the sandbox, and lands on the /tmp
-# tmpfs that always exists (so the bind has a mountpoint regardless of layout).
+# Where ll-helper is mounted *inside* the sandbox.
 my $ll_dest = '/tmp/.aye-buddy-ll-helper';
 
-# perl is by definition present (we're running under it), and inside the sandbox
-# it comes from the same ro-bound /usr, so the only thing to check for the
-# Landlock layer is that the helper script itself is readable.
 my $use_landlock = 1;
 if (!-r $ll_helper) {
     warning("ll-helper not found ($ll_helper); Landlock layer off");
     $use_landlock = 0;
 }
 
-# Find the project root by walking up from CWD. We deliberately do NOT
-# invoke `git` or `jj` on the host here: `git rev-parse` would process
-# the project's .git/config before the sandbox exists, and config knobs
-# like core.fsmonitor (plus a history of git config-parsing CVEs) could
-# execute code on the host. A plain stat walk has no such surface.
-#
-# Resolve symlinks so the slug claude derives from cwd is stable
-# regardless of which path the user happened to navigate through
-# (e.g. `~/data` -> `/mnt/data/data`). Host claude canonicalises and
-# stores the resolved cwd in session files; the wrapper must match.
+# Find the project root by walking up from CWD with a plain stat walk. We avoid
+# `git`/`jj` here: running them on the host would parse the project's .git/config
+# (core.fsmonitor, config-parsing CVEs) and could execute code before the sandbox
+# exists. A stat walk has no such surface.
 my $cwd = Cwd::abs_path('.') // fail("cannot resolve current directory");
 my $project_dir;
 {
@@ -92,13 +60,10 @@ my $project_dir;
 fail("$cwd is not inside a git or jj repository")
     unless defined $project_dir;
 
-# A linked worktree (or submodule working dir) has `.git` as a FILE
-# containing `gitdir: <path>` that points OUTSIDE this directory — into
-# the main repo's .git/worktrees/<name> and the shared common .git. We
-# only bind project_dir, so that gitdir target is unreachable and every
-# git command inside the sandbox fails ("not a git repository"). Detect
-# it and refuse rather than launching a sandbox where git silently
-# breaks. (Real fix: bind the worktree gitdir + commondir too — TODO.)
+# A linked worktree (or submodule) has `.git` as a FILE pointing OUTSIDE this
+# directory. We only bind project_dir, so that target is unreachable and every
+# git command inside the sandbox fails. Refuse rather than launch a sandbox where
+# git silently breaks. (Real fix: bind the worktree gitdir + commondir too — TODO.)
 if (-f "$project_dir/.git") {
     fail("$project_dir is a git worktree or submodule (.git is a file\n" .
          "  pointing outside this directory); git won't work inside the sandbox.\n" .
@@ -113,15 +78,6 @@ unless (-e $claude_json) {
     close $fh;
 }
 
-# Filesystem exposure is declared exactly once, through these helpers: each
-# appends the bwrap bind AND records the matching Landlock path (the
-# sandbox-side dest), so the bwrap mount set and the Landlock ruleset can't
-# drift apart — @ll_rw/@ll_ro are accumulated as a side effect and handed to
-# ll-helper below. ll-helper skips paths it can't open, so mandatory and
-# optional (-try) binds map to the same LL entry. A symlink names no inode of
-# its own, so it gets no Landlock rule. The bind helpers take a single path
-# when the host source and sandbox dest are the same (the common case) and an
-# explicit (src, dest) pair only when they differ.
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
 sub bind_ro  { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind',     $s, $d; push @ll_ro, $d }
@@ -143,24 +99,19 @@ mount_rw('--dev',   '/dev');
 mount_rw('--tmpfs', '/tmp');
 mount_rw('--tmpfs', $home);
 bind_rw($project_dir);
-# .git/hooks scripts and .git/config knobs (core.fsmonitor, core.sshCommand,
-# bang-aliases, etc.) get executed by host git the next time the user runs
-# anything against the repo outside the sandbox. Keep them ro so a session
-# can't plant something the host will later run. Same for submodule git dirs
-# under .git/modules/.
+# Host git runs .git/hooks scripts and .git/config knobs (core.fsmonitor,
+# core.sshCommand, bang-aliases) next time the user touches the repo outside the
+# sandbox. Keep them ro so a session can't plant code the host will later run.
+# Same for submodule git dirs under .git/modules/.
 try_ro("$project_dir/.git/hooks");
 try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
-# ~/.claude is rw because claude actively writes to many subpaths (sessions/,
-# projects/, todos/, history.jsonl, file-history/, backups/, caches, telemetry,
-# .credentials.json on OAuth refresh, ...). The specific paths that would let a
-# sandboxed session inject code into a later host-side `claude` invocation are
-# ro-overlaid below: hooks in settings.json, custom slash commands, agent
-# definitions, plugins, explicit hooks dirs, ~/.claude/scripts/ (the user's
-# personal scripts referenced by hooks/statusline/etc.), and MCP server
-# configs. Files that don't exist on launch fall through to rw — create empty
-# placeholders on the host if you want strict enforcement before any of these
-# have been set up.
+# ~/.claude is rw because claude writes to many subpaths (sessions/, projects/,
+# history.jsonl, .credentials.json on OAuth refresh, ...). The paths that could
+# let a session inject code into a later host-side `claude` are ro-overlaid below:
+# settings, slash commands, agents, plugins, hooks, ~/.claude/scripts/, and MCP
+# configs. Paths absent at launch fall through to rw — create empty placeholders
+# on the host for strict enforcement before they exist.
 bind_rw("$home/.claude");
 try_ro("$home/.claude/settings.json");
 try_ro("$home/.claude/settings.local.json");
@@ -177,8 +128,7 @@ try_ro("$home/.config/git");
 try_ro("$home/.ssh/config");
 try_ro("$home/.ssh/known_hosts");
 
-# Bind the helper in for the in-sandbox `perl` to read it, at the fixed $ll_dest
-# (over the /tmp tmpfs mounted above). RO — the sandbox never writes it.
+# Bind the helper at $ll_dest for the in-sandbox `perl` to read. RO — never written.
 if ($use_landlock) {
     bind_ro($ll_helper, $ll_dest);
 }
@@ -210,24 +160,21 @@ for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
     push @args, '--setenv', $var, $val if defined $val && length $val;
 }
 
-# Hand ll-helper the permitted paths accumulated by the bind helpers above.
-# Once the ruleset is enforced everything else is denied, so the lists
-# necessarily cover the synthetic mounts (/tmp, /proc, /dev, the tmpfs $HOME)
-# as well as the host paths. Newline-separated. The paths resolve inside the
-# sandbox: e.g. "$HOME" is the tmpfs, not the host home, so granting it rw
-# exposes nothing real. RO entries that nest under an rw path reinforce bwrap's
-# read-only bind where Landlock honours the more-specific rule, and are a
-# harmless no-op where it doesn't (bwrap already pins them read-only).
+# Hand ll-helper the permitted paths (newline-separated) accumulated above. Once
+# the ruleset is enforced everything else is denied, so the lists must also cover
+# the synthetic mounts (/tmp, /proc, /dev, the tmpfs $HOME). Paths resolve inside
+# the sandbox: "$HOME" is the tmpfs, not host home, so granting it rw exposes
+# nothing real. RO entries nested under an rw path reinforce bwrap's read-only
+# bind where Landlock honours the more-specific rule, and are a no-op otherwise.
 if ($use_landlock) {
     push @args,
         '--setenv', 'LL_RW', join("\n", @ll_rw),
         '--setenv', 'LL_RO', join("\n", @ll_ro);
 }
 
-# Apply the seccomp denylist to the payload. bwrap installs it after building
-# the sandbox, so it doesn't block bwrap's own unshare/mount; it's read from an
-# inherited fd (the blob need not be visible inside the sandbox). We dup the
-# blob onto fd 3 just before exec and point bwrap at it with `--seccomp 3`.
+# Apply the seccomp denylist to the payload. bwrap installs it after building the
+# sandbox (so it doesn't block bwrap's own unshare/mount) and reads it from an
+# inherited fd. We dup the blob onto fd 3 before exec and pass `--seccomp 3`.
 my $use_seccomp = 0;
 if (-r $seccomp_blob) {
     $use_seccomp = 1;
@@ -253,29 +200,22 @@ push @args,
     '--unshare-user',
     '--unshare-pid',
     '--unshare-ipc',
-    # New UTS namespace gives the sandbox a private hostname/domainname to
-    # write, so sethostname/setdomainname can't touch the host's. The seccomp
-    # denylist also blocks those calls outright; this is the namespace-axis
-    # companion (defense in depth — neither is load-bearing alone).
+    # Private UTS namespace so sethostname/setdomainname can't touch the host's.
+    # The seccomp denylist also blocks those calls — defense in depth.
     '--unshare-uts',
     '--share-net',
-    # New session (setsid) so the sandboxed process has no controlling
-    # terminal and can't use the TIOCSTI ioctl to inject keystrokes into
-    # the host shell after claude exits — the classic interactive-sandbox
-    # escape. The cost is that claude no longer shares our controlling tty;
-    # bwrap reconnects stdio so the TUI still works.
+    # New session (setsid) so the process has no controlling terminal and can't
+    # use the TIOCSTI ioctl to inject keystrokes into the host shell — the classic
+    # interactive-sandbox escape. bwrap reconnects stdio so the TUI still works.
     '--new-session',
     '--die-with-parent',
     '--',
     @payload;
 
-# Wire the seccomp blob onto fd 3 for `--seccomp 3`. Perl marks every fd it
-# opens close-on-exec (anything above $^F), so we dup the blob onto fd 3 and
-# then explicitly clear FD_CLOEXEC on it — otherwise the kernel would close
-# fd 3 at the exec into bwrap and `--seccomp 3` would read a dead fd. Done last
-# so nothing else allocates fd 3 in between.
-# Held until exec: if these handles went out of scope, perl would close the
-# underlying fd 3 and bwrap would see a dead descriptor.
+# Wire the seccomp blob onto fd 3 for `--seccomp 3`. Perl opens fds close-on-exec,
+# so we dup the blob onto fd 3 and clear FD_CLOEXEC — otherwise the kernel closes
+# fd 3 at exec and bwrap reads a dead fd. The handles must stay in scope until
+# exec, or perl closes fd 3 from under bwrap. Done last so nothing else takes fd 3.
 my ($seccomp_fh, $seccomp_fd3);
 if ($use_seccomp) {
     open($seccomp_fh, '<', $seccomp_blob)
