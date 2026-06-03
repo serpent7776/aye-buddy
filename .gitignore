@@ -1,0 +1,2 @@
+# build artifact from `make seccomp`
+/gen-seccomp

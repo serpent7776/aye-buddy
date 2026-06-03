@@ -1,0 +1,317 @@
+#!/usr/bin/env perl
+# aye-buddy: run claude in a bwrap sandbox. See client.md.
+#
+# Perl (not shell) so it shares an interpreter with ll-helper, the Landlock
+# payload it launches — one language, no build step, runs anywhere bwrap +
+# claude + perl exist. Like ll-helper it stays in pure core Perl: no XS, no
+# CPAN. We never invoke a shell, so argument arrays reach bwrap verbatim with
+# no quoting/word-splitting surface.
+
+use strict;
+use warnings;
+use Cwd ();
+use POSIX ();
+use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
+use FindBin qw($RealBin);
+use File::Path qw(make_path);
+use File::Basename qw(dirname);
+
+sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
+sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
+
+# Locate an executable on PATH (replacement for `command -v`). We only need a
+# boolean here; bwrap and claude are resolved by execvp at launch time.
+sub on_path {
+    my ($cmd) = @_;
+    for my $d (split /:/, $ENV{PATH} // '') {
+        next unless length $d;
+        return 1 if -x "$d/$cmd";
+    }
+    return 0;
+}
+
+for my $cmd (qw(bwrap claude)) {
+    on_path($cmd) or fail("required command not found on PATH: $cmd");
+}
+
+# Defense-in-depth helpers shipped alongside this script (see TODO.md):
+#   ll-helper   applies a Landlock ruleset from inside the sandbox, a second
+#               wall behind bwrap's mount namespace (enforced on the real
+#               inode, so /proc magic-links and symlink/TOCTOU tricks don't
+#               help and it survives a namespace escape).
+#   filter.bpf  precompiled seccomp denylist fed to `bwrap --seccomp`, shrinking
+#               the kernel syscall attack surface (no namespace creation, no
+#               module/bpf/kexec/ptrace, ...).
+# Both are optional and independent: if either is missing we warn and fall back
+# to the layers that remain, so aye-buddy keeps working on a fresh checkout.
+#
+# $RealBin is FindBin's symlink-resolved directory of this script, regardless of
+# whether we were found via PATH or a symlink — the equivalent of
+# dirname(readlink -f "$0"). The helpers live next to the installed script.
+my $self_dir     = $RealBin;
+my $ll_helper    = "$self_dir/ll-helper";
+my $seccomp_blob = "$self_dir/filter.bpf";
+
+# Where ll-helper is mounted *inside* the sandbox. A fixed neutral path rather
+# than its host location: it doesn't depend on where aye-buddy is installed,
+# doesn't leak the host install path into the sandbox, and lands on the /tmp
+# tmpfs that always exists (so the bind has a mountpoint regardless of layout).
+my $ll_dest = '/tmp/.aye-buddy-ll-helper';
+
+# perl is by definition present (we're running under it), and inside the sandbox
+# it comes from the same ro-bound /usr, so the only thing to check for the
+# Landlock layer is that the helper script itself is readable.
+my $use_landlock = 1;
+if (!-r $ll_helper) {
+    warning("ll-helper not found ($ll_helper); Landlock layer off");
+    $use_landlock = 0;
+}
+
+# Find the project root by walking up from CWD. We deliberately do NOT
+# invoke `git` or `jj` on the host here: `git rev-parse` would process
+# the project's .git/config before the sandbox exists, and config knobs
+# like core.fsmonitor (plus a history of git config-parsing CVEs) could
+# execute code on the host. A plain stat walk has no such surface.
+#
+# Resolve symlinks so the slug claude derives from cwd is stable
+# regardless of which path the user happened to navigate through
+# (e.g. `~/data` -> `/mnt/data/data`). Host claude canonicalises and
+# stores the resolved cwd in session files; the wrapper must match.
+my $cwd = Cwd::abs_path('.') // fail("cannot resolve current directory");
+my $project_dir;
+{
+    my $dir = $cwd;
+    while ($dir ne '/') {
+        if (-e "$dir/.git" || -d "$dir/.jj") {
+            $project_dir = $dir;
+            last;
+        }
+        $dir = dirname($dir);
+    }
+}
+fail("$cwd is not inside a git or jj repository")
+    unless defined $project_dir;
+
+# A linked worktree (or submodule working dir) has `.git` as a FILE
+# containing `gitdir: <path>` that points OUTSIDE this directory — into
+# the main repo's .git/worktrees/<name> and the shared common .git. We
+# only bind project_dir, so that gitdir target is unreachable and every
+# git command inside the sandbox fails ("not a git repository"). Detect
+# it and refuse rather than launching a sandbox where git silently
+# breaks. (Real fix: bind the worktree gitdir + commondir too — TODO.)
+if (-f "$project_dir/.git") {
+    fail("$project_dir is a git worktree or submodule (.git is a file\n" .
+         "  pointing outside this directory); git won't work inside the sandbox.\n" .
+         "  Not supported yet — run aye-buddy from the main checkout instead.");
+}
+
+my $home = $ENV{HOME} // fail("HOME is not set");
+make_path("$home/.claude");
+my $claude_json = "$home/.claude.json";
+unless (-e $claude_json) {
+    open(my $fh, '>', $claude_json) or fail("cannot create $claude_json: $!");
+    close $fh;
+}
+
+my @args = (
+    '--ro-bind', '/usr', '/usr',
+    '--ro-bind', '/etc', '/etc',
+    '--ro-bind-try', '/opt', '/opt',
+    '--ro-bind-try', '/nix', '/nix',
+    '--symlink', 'usr/bin', '/bin',
+    '--symlink', 'usr/lib', '/lib',
+    '--symlink', 'usr/lib64', '/lib64',
+    '--proc', '/proc',
+    '--dev', '/dev',
+    '--tmpfs', '/tmp',
+    '--tmpfs', $home,
+    '--bind', $project_dir, $project_dir,
+    # .git/hooks scripts and .git/config knobs (core.fsmonitor,
+    # core.sshCommand, bang-aliases, etc.) get executed by host git the next
+    # time the user runs anything against the repo outside the sandbox. Keep
+    # them ro so a session can't plant something the host will later run.
+    # Same for submodule git dirs under .git/modules/.
+    '--ro-bind-try', "$project_dir/.git/hooks",   "$project_dir/.git/hooks",
+    '--ro-bind-try', "$project_dir/.git/config",  "$project_dir/.git/config",
+    '--ro-bind-try', "$project_dir/.git/modules", "$project_dir/.git/modules",
+    # ~/.claude is rw because claude actively writes to many subpaths
+    # (sessions/, projects/, todos/, history.jsonl, file-history/, backups/,
+    # caches, telemetry, .credentials.json on OAuth refresh, ...). The
+    # specific paths that would let a sandboxed session inject code into a
+    # later host-side `claude` invocation are ro-overlaid below: hooks in
+    # settings.json, custom slash commands, agent definitions, plugins,
+    # explicit hooks dirs, ~/.claude/scripts/ (the user's personal scripts
+    # referenced by hooks/statusline/etc.), and MCP server configs. Files
+    # that don't exist on launch fall through to rw — create empty
+    # placeholders on the host if you want strict enforcement before any
+    # of these have been set up.
+    '--bind', "$home/.claude", "$home/.claude",
+    '--ro-bind-try', "$home/.claude/settings.json",       "$home/.claude/settings.json",
+    '--ro-bind-try', "$home/.claude/settings.local.json", "$home/.claude/settings.local.json",
+    '--ro-bind-try', "$home/.claude/commands",            "$home/.claude/commands",
+    '--ro-bind-try', "$home/.claude/agents",              "$home/.claude/agents",
+    '--ro-bind-try', "$home/.claude/plugins",             "$home/.claude/plugins",
+    '--ro-bind-try', "$home/.claude/hooks",               "$home/.claude/hooks",
+    '--ro-bind-try', "$home/.claude/scripts",             "$home/.claude/scripts",
+    '--ro-bind-try', "$home/.claude/mcp.json",            "$home/.claude/mcp.json",
+    '--ro-bind-try', "$home/.claude/.mcp.json",           "$home/.claude/.mcp.json",
+    '--bind', $claude_json, $claude_json,
+    '--ro-bind-try', "$home/.gitconfig",       "$home/.gitconfig",
+    '--ro-bind-try', "$home/.config/git",      "$home/.config/git",
+    '--ro-bind-try', "$home/.ssh/config",      "$home/.ssh/config",
+    '--ro-bind-try', "$home/.ssh/known_hosts", "$home/.ssh/known_hosts",
+);
+
+# Bind the helper in for the in-sandbox `perl` to read it, at the fixed $ll_dest
+# (over the /tmp tmpfs mounted above). RO — the sandbox never writes it.
+if ($use_landlock) {
+    push @args, '--ro-bind', $ll_helper, $ll_dest;
+}
+
+my $ssh_sock = $ENV{SSH_AUTH_SOCK};
+if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
+    push @args,
+        '--bind', $ssh_sock, '/run/ssh-agent',
+        '--setenv', 'SSH_AUTH_SOCK', '/run/ssh-agent';
+}
+
+# Clear inherited env so host secrets (API tokens, cloud credentials,
+# arbitrary shell exports) don't leak into the sandbox. Reintroduce only
+# the minimum claude and child tools need to function. SSH_AUTH_SOCK
+# (above) is the other survivor.
+my $user    = $ENV{USER}    // (getpwuid($>))[0];
+my $logname = $ENV{LOGNAME} // $user;
+push @args,
+    '--clearenv',
+    '--setenv', 'HOME', $home,
+    '--setenv', 'USER', $user,
+    '--setenv', 'LOGNAME', $logname,
+    '--setenv', 'PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    '--setenv', 'PWD', $project_dir,
+    '--setenv', 'TERM', ($ENV{TERM} // 'xterm'),
+    '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8'),
+    # Tell claude it's already inside an external sandbox so it skips the
+    # workspace trust dialog (the bwrap boundary is the actual trust
+    # decision here).
+    '--setenv', 'CLAUDE_CODE_SANDBOXED', '1';
+for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
+                LC_MONETARY COLORTERM NO_COLOR)) {
+    my $val = $ENV{$var};
+    push @args, '--setenv', $var, $val if defined $val && length $val;
+}
+
+# Tell ll-helper which paths the Landlock ruleset should permit — a mirror of
+# the bwrap bind set above. Once enforced, everything else is denied, so this
+# must include the synthetic mounts (/tmp, /proc, /dev, the tmpfs $HOME), not
+# just the host paths. Newline-separated; ll-helper skips entries it can't open
+# (mirroring --*-bind-try). The paths resolve inside the sandbox: e.g. "$HOME"
+# is the tmpfs, not the host home, so granting it rw exposes nothing real.
+if ($use_landlock) {
+    my @ll_rw = (
+        $project_dir,
+        "$home/.claude",
+        $claude_json,
+        '/tmp',
+        $home,
+        '/dev',
+        '/proc',
+    );
+    if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
+        push @ll_rw, '/run/ssh-agent';
+    }
+    # RO mirrors the --ro-bind* set. Several entries nest under rw paths above;
+    # where Landlock honours the more-specific rule this reinforces bwrap's
+    # read-only binds (e.g. .git/hooks, ~/.claude/settings.json), and where it
+    # doesn't it is a harmless no-op — bwrap already pins them read-only.
+    my @ll_ro = (
+        '/usr', '/etc', '/opt', '/nix',
+        "$project_dir/.git/hooks",
+        "$project_dir/.git/config",
+        "$project_dir/.git/modules",
+        "$home/.claude/settings.json",
+        "$home/.claude/settings.local.json",
+        "$home/.claude/commands",
+        "$home/.claude/agents",
+        "$home/.claude/plugins",
+        "$home/.claude/hooks",
+        "$home/.claude/scripts",
+        "$home/.claude/mcp.json",
+        "$home/.claude/.mcp.json",
+        "$home/.gitconfig",
+        "$home/.config/git",
+        "$home/.ssh/config",
+        "$home/.ssh/known_hosts",
+        $ll_dest,
+    );
+    push @args,
+        '--setenv', 'LL_RW', join("\n", @ll_rw),
+        '--setenv', 'LL_RO', join("\n", @ll_ro);
+}
+
+# Apply the seccomp denylist to the payload. bwrap installs it after building
+# the sandbox, so it doesn't block bwrap's own unshare/mount; it's read from an
+# inherited fd (the blob need not be visible inside the sandbox). We dup the
+# blob onto fd 3 just before exec and point bwrap at it with `--seccomp 3`.
+my $use_seccomp = 0;
+if (-r $seccomp_blob) {
+    $use_seccomp = 1;
+    push @args, '--seccomp', '3';
+} else {
+    warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
+}
+
+# Payload: run claude directly, or wrap it in ll-helper so Landlock is applied
+# to the final sandbox view and inherited down into claude and its children.
+my @payload = (
+    'claude',
+    '--dangerously-skip-permissions',
+    '--settings', '{"sandbox":{"enabled":false}}',
+    @ARGV,
+);
+if ($use_landlock) {
+    @payload = ('perl', $ll_dest, '--', @payload);
+}
+
+push @args,
+    '--chdir', $project_dir,
+    '--unshare-user',
+    '--unshare-pid',
+    '--unshare-ipc',
+    # New UTS namespace gives the sandbox a private hostname/domainname to
+    # write, so sethostname/setdomainname can't touch the host's. The seccomp
+    # denylist also blocks those calls outright; this is the namespace-axis
+    # companion (defense in depth — neither is load-bearing alone).
+    '--unshare-uts',
+    '--share-net',
+    # New session (setsid) so the sandboxed process has no controlling
+    # terminal and can't use the TIOCSTI ioctl to inject keystrokes into
+    # the host shell after claude exits — the classic interactive-sandbox
+    # escape. The cost is that claude no longer shares our controlling tty;
+    # bwrap reconnects stdio so the TUI still works.
+    '--new-session',
+    '--die-with-parent',
+    '--',
+    @payload;
+
+# Wire the seccomp blob onto fd 3 for `--seccomp 3`. Perl marks every fd it
+# opens close-on-exec (anything above $^F), so we dup the blob onto fd 3 and
+# then explicitly clear FD_CLOEXEC on it — otherwise the kernel would close
+# fd 3 at the exec into bwrap and `--seccomp 3` would read a dead fd. Done last
+# so nothing else allocates fd 3 in between.
+# Held until exec: if these handles went out of scope, perl would close the
+# underlying fd 3 and bwrap would see a dead descriptor.
+my ($seccomp_fh, $seccomp_fd3);
+if ($use_seccomp) {
+    open($seccomp_fh, '<', $seccomp_blob)
+        or fail("cannot open seccomp blob $seccomp_blob: $!");
+    POSIX::dup2(fileno($seccomp_fh), 3) == 3
+        or fail("cannot place seccomp blob on fd 3: $!");
+    open($seccomp_fd3, '<&=', 3)
+        or fail("cannot reopen fd 3: $!");
+    my $flags = fcntl($seccomp_fd3, F_GETFD, 0);
+    fcntl($seccomp_fd3, F_SETFD, $flags & ~FD_CLOEXEC)
+        or fail("cannot clear close-on-exec on fd 3: $!");
+}
+
+exec { 'bwrap' } 'bwrap', @args
+    or fail("exec bwrap: $!");

@@ -1,0 +1,170 @@
+#!/usr/bin/env perl
+# ll-helper: apply a Landlock filesystem ruleset to the calling process, then
+# exec the command passed as arguments. Meant to run as bwrap's *payload* —
+#
+#     bwrap <namespace+mount setup> -- perl ll-helper -- claude <args...>
+#
+# so the ruleset lands on the already-constructed sandbox view and is inherited
+# (Landlock rules can only tighten, survive execve, and travel across namespace
+# changes) down into claude and every child it spawns. This is a SECOND wall
+# behind bwrap's mount namespace: bwrap hides paths by not mounting them;
+# Landlock refuses the open() on the target inode regardless of how it's named
+# (procfs magic-links, symlinks, post-namespace-escape). See TODO.md.
+#
+# Allowed paths come from the environment, newline-separated:
+#   LL_RW   paths granted the full supported access set (read+write+...)
+#   LL_RO   paths granted read + execute only
+# Once a ruleset is enforced everything NOT listed is denied, so these lists
+# must enumerate every path the payload needs, including the synthetic mounts
+# (/tmp, /proc, /dev, the tmpfs $HOME) — not just the secrets being walled off.
+#
+# Degradation: on a kernel without Landlock (< 5.13 or LSM disabled) the helper
+# warns and execs the command anyway (bwrap stays the floor) — unless LL_STRICT
+# is set, in which case it refuses to run unprotected. Older Landlock ABIs are
+# negotiated down to the access rights they actually support.
+#
+# Pure Perl on purpose: no XS, no CPAN, no compiler — the three landlock_*
+# syscalls (444/445/446, stable across architectures) are issued directly via
+# perl's syscall(). All modules are pulled in at compile time; nothing is
+# loaded after the ruleset is enforced.
+
+use strict;
+use warnings;
+use Errno qw(ENOSYS EOPNOTSUPP);
+
+use constant {
+    # Syscall numbers — identical on every Linux architecture (assigned in the
+    # post-unification range), so no per-arch table is needed.
+    SYS_landlock_create_ruleset => 444,
+    SYS_landlock_add_rule       => 445,
+    SYS_landlock_restrict_self  => 446,
+
+    LANDLOCK_CREATE_RULESET_VERSION => 1,
+    LANDLOCK_RULE_PATH_BENEATH      => 1,
+
+    # open(2) flags. O_PATH gets an fd that names the inode without needing
+    # read permission and without opening it for I/O — exactly what
+    # landlock_path_beneath_attr.parent_fd wants. O_CLOEXEC so the fds vanish
+    # at execve and never leak into claude.
+    O_PATH    => 0x200000,
+    O_CLOEXEC => 0x080000,
+
+    # struct landlock_access_fs bits.
+    A_EXECUTE     => 1 <<  0,
+    A_WRITE_FILE  => 1 <<  1,
+    A_READ_FILE   => 1 <<  2,
+    A_READ_DIR    => 1 <<  3,
+    A_REMOVE_DIR  => 1 <<  4,
+    A_REMOVE_FILE => 1 <<  5,
+    A_MAKE_CHAR   => 1 <<  6,
+    A_MAKE_DIR    => 1 <<  7,
+    A_MAKE_REG    => 1 <<  8,
+    A_MAKE_SOCK   => 1 <<  9,
+    A_MAKE_FIFO   => 1 << 10,
+    A_MAKE_BLOCK  => 1 << 11,
+    A_MAKE_SYM    => 1 << 12,
+    A_REFER       => 1 << 13,  # ABI >= 2
+    A_TRUNCATE    => 1 << 14,  # ABI >= 3
+    A_IOCTL_DEV   => 1 << 15,  # ABI >= 5
+};
+
+sub note { warn "ll-helper: $_[0]\n" }
+
+sub split_paths {
+    my ($v) = @_;
+    return () unless defined $v && length $v;
+    return grep { length } split /\n/, $v;
+}
+
+# The command to exec is everything after an optional "--" separator.
+my @cmd = @ARGV;
+shift @cmd if @cmd && $cmd[0] eq '--';
+die "ll-helper: no command to exec\n" unless @cmd;
+
+# Read our configuration, then scrub it from the environment so it does not
+# leak into the sandboxed process. (Must read BEFORE deleting.)
+my $strict  = $ENV{LL_STRICT};
+my $verbose = $ENV{LL_VERBOSE};
+my @rw = split_paths($ENV{LL_RW});
+my @ro = split_paths($ENV{LL_RO});
+delete @ENV{qw(LL_RO LL_RW LL_STRICT LL_VERBOSE)};
+
+# Add one path_beneath rule per allowed path. Missing optional paths are
+# skipped, mirroring bwrap's --*-bind-try.
+use constant FILE_ACCESS =>
+    A_EXECUTE | A_WRITE_FILE | A_READ_FILE | A_TRUNCATE | A_IOCTL_DEV;
+
+sub add_path {
+    my ($ruleset_fd, $path, $access) = @_;
+    my $fh;
+    unless (sysopen($fh, $path, O_PATH | O_CLOEXEC)) {
+        # Mirrors bwrap's --*-bind-try, which skips a missing path silently;
+        # only surface it under LL_VERBOSE so a normal run stays quiet.
+        note "skip (cannot open $path): $!" if $verbose;
+        return;
+    }
+    # The kernel rejects directory-only rights (READ_DIR, MAKE_*, REMOVE_*) on
+    # a rule whose target is a regular file/socket/device — mask them off there.
+    $access &= FILE_ACCESS unless -d $fh;
+    return unless $access;
+    my $fd = fileno($fh);
+    # struct landlock_path_beneath_attr {__u64 allowed_access; __s32 parent_fd;}
+    # is __packed__ (12 bytes); pack('Ql') matches with no padding.
+    my $rule = pack('Q l', $access, $fd);
+    my $r = syscall(SYS_landlock_add_rule, $ruleset_fd,
+                    LANDLOCK_RULE_PATH_BENEATH, $rule, 0);
+    die "ll-helper: landlock_add_rule($path): $!\n" if $r < 0;
+    # $fh closes here (O_CLOEXEC); the rule already captured the inode.
+}
+
+# Build and enforce the ruleset. Returns false (without enforcing) only when
+# Landlock is absent from the kernel, so the caller can run bwrap-only.
+sub apply_landlock {
+    my $abi = syscall(SYS_landlock_create_ruleset, 0, 0,
+                      LANDLOCK_CREATE_RULESET_VERSION);
+    if ($abi < 0) {
+        return 0 if $!{ENOSYS} || $!{EOPNOTSUPP};   # not available — degrade
+        die "ll-helper: landlock_create_ruleset(version): $!\n";
+    }
+    note "Landlock ABI $abi" if $verbose;
+
+    # Mask the access rights down to what this ABI understands; the kernel
+    # rejects a ruleset that handles bits it doesn't support.
+    my $supported = A_EXECUTE | A_WRITE_FILE | A_READ_FILE | A_READ_DIR
+                  | A_REMOVE_DIR | A_REMOVE_FILE
+                  | A_MAKE_CHAR | A_MAKE_DIR | A_MAKE_REG | A_MAKE_SOCK
+                  | A_MAKE_FIFO | A_MAKE_BLOCK | A_MAKE_SYM;        # ABI v1
+    $supported |= A_REFER     if $abi >= 2;
+    $supported |= A_TRUNCATE  if $abi >= 3;
+    $supported |= A_IOCTL_DEV if $abi >= 5;
+
+    my $rw_access = $supported;
+    my $ro_access = (A_READ_FILE | A_READ_DIR | A_EXECUTE) & $supported;
+
+    # struct landlock_ruleset_attr { __u64 handled_access_fs; ... }. We pass
+    # only the first field (size 8); the kernel zero-extends later fields (the
+    # ABI-v4 network field we don't use), which is valid on every ABI.
+    my $attr = pack('Q', $supported);
+    my $rfd  = syscall(SYS_landlock_create_ruleset, $attr, length($attr), 0);
+    die "ll-helper: landlock_create_ruleset: $!\n" if $rfd < 0;
+
+    add_path($rfd, $_, $rw_access) for @rw;
+    add_path($rfd, $_, $ro_access) for @ro;
+
+    # Relies on no_new_privs, which bwrap sets on the payload. If it were
+    # missing this returns EPERM and we fail closed rather than exec unprotected.
+    my $r = syscall(SYS_landlock_restrict_self, $rfd, 0);
+    die "ll-helper: landlock_restrict_self: $!\n" if $r < 0;
+    note "Landlock enforced (" . scalar(@rw) . " rw, " . scalar(@ro) . " ro paths)"
+        if $verbose;
+    return 1;
+}
+
+unless (apply_landlock()) {
+    my $msg = "Landlock unavailable — bwrap namespaces remain in effect";
+    die "ll-helper: $msg; refusing (LL_STRICT set)\n" if $strict;
+    note $msg;
+}
+
+exec { $cmd[0] } @cmd;
+die "ll-helper: exec $cmd[0]: $!\n";
