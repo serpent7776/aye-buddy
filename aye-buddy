@@ -114,6 +114,7 @@ unless (-e $claude_json) {
 }
 
 my @args = (
+    '--clearenv', # must be before any --setenv
     '--ro-bind', '/usr', '/usr',
     '--ro-bind', '/etc', '/etc',
     '--ro-bind-try', '/opt', '/opt',
@@ -175,14 +176,10 @@ if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
         '--setenv', 'SSH_AUTH_SOCK', '/run/ssh-agent';
 }
 
-# Clear inherited env so host secrets (API tokens, cloud credentials,
-# arbitrary shell exports) don't leak into the sandbox. Reintroduce only
-# the minimum claude and child tools need to function. SSH_AUTH_SOCK
-# (above) is the other survivor.
+# Reintroduce any required env var
 my $user    = $ENV{USER}    // (getpwuid($>))[0];
 my $logname = $ENV{LOGNAME} // $user;
 push @args,
-    '--clearenv',
     '--setenv', 'HOME', $home,
     '--setenv', 'USER', $user,
     '--setenv', 'LOGNAME', $logname,
