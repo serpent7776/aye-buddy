@@ -35,8 +35,7 @@
 /* Privileged / escape-relevant syscalls a sandboxed agent never legitimately
  * needs. EPERM. */
 static const char *deny_eperm[] = {
-    /* mount-table and namespace manipulation (new mount API included) */
-    "mount", "umount2", "pivot_root", "chroot", "unshare", "setns",
+    "chroot", "setns",
     "move_mount", "open_tree", "fsopen", "fsconfig", "fsmount", "fspick",
     "mount_setattr",
     /* handle-based open: resolves a file by inode/NFS handle, bypassing
@@ -61,6 +60,12 @@ static const char *deny_eperm[] = {
      * but cheap to deny outright) */
     "swapon", "swapoff", "reboot", "acct", "quotactl",
     "settimeofday", "clock_settime", "clock_adjtime", "adjtimex",
+    NULL,
+};
+
+/* Denied by default, RE-ALLOWED in the --allow-nested-bwrap variant. */
+static const char *deny_nest[] = {
+    "unshare", "mount", "umount2", "pivot_root",
     NULL,
 };
 
@@ -105,8 +110,18 @@ static int deny(scmp_filter_ctx ctx, const char *name, uint32_t action)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2) {
-        fprintf(stderr, "usage: %s <output.bpf>\n", argv[0]);
+    /* --allow-nested-bwrap re-allows the mount/namespace syscalls (deny_nest[]
+     * and clone's namespace flags) so the sandboxed agent can run bwrap itself.
+     * Everything else stays denied. */
+    int allow_nested_bwrap = 0, bad = 0;
+    const char *out = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--allow-nested-bwrap")) allow_nested_bwrap = 1;
+        else if (!out)                                out = argv[i];
+        else                                          bad = 1;
+    }
+    if (!out || bad) {
+        fprintf(stderr, "usage: %s [--allow-nested-bwrap] <output.bpf>\n", argv[0]);
         return 2;
     }
 
@@ -127,29 +142,34 @@ int main(int argc, char **argv)
 
     /* clone3 passes its flags inside a struct (a pointer seccomp can't read),
      * so it can't be filtered by flag — force ENOSYS so callers fall back to
-     * clone(), which we *can* filter below. */
+     * clone(), which we *can* filter below. (bwrap's raw_clone uses SYS_clone.) */
     deny(ctx, "clone3", SCMP_ACT_ERRNO(ENOSYS));
 
-    int clone_nr = seccomp_syscall_resolve_name("clone");
-    if (clone_nr != __NR_SCMP_ERROR) {
-        for (const unsigned long *f = clone_ns_flags; *f; f++) {
-            int rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), clone_nr, 1,
-                         SCMP_A0(SCMP_CMP_MASKED_EQ, *f, *f));
-            if (rc < 0)
-                fprintf(stderr, "gen-seccomp: warn: clone flag 0x%lx: %s\n",
-                        *f, strerror(-rc));
+    if (!allow_nested_bwrap) {
+        for (const char **p = deny_nest; *p; p++) deny(ctx, *p, SCMP_ACT_ERRNO(EPERM));
+
+        int clone_nr = seccomp_syscall_resolve_name("clone");
+        if (clone_nr != __NR_SCMP_ERROR) {
+            for (const unsigned long *f = clone_ns_flags; *f; f++) {
+                int rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), clone_nr, 1,
+                             SCMP_A0(SCMP_CMP_MASKED_EQ, *f, *f));
+                if (rc < 0)
+                    fprintf(stderr, "gen-seccomp: warn: clone flag 0x%lx: %s\n",
+                            *f, strerror(-rc));
+            }
         }
     }
 
-    FILE *out = fopen(argv[1], "wb");
-    if (!out) { perror("gen-seccomp: fopen"); seccomp_release(ctx); return 1; }
-    int rc = seccomp_export_bpf(ctx, fileno(out));
+    FILE *fp = fopen(out, "wb");
+    if (!fp) { perror("gen-seccomp: fopen"); seccomp_release(ctx); return 1; }
+    int rc = seccomp_export_bpf(ctx, fileno(fp));
     if (rc < 0) {
         fprintf(stderr, "gen-seccomp: export: %s\n", strerror(-rc));
-        fclose(out); seccomp_release(ctx); return 1;
+        fclose(fp); seccomp_release(ctx); return 1;
     }
-    fclose(out);
+    fclose(fp);
     seccomp_release(ctx);
-    fprintf(stderr, "gen-seccomp: wrote %s\n", argv[1]);
+    fprintf(stderr, "gen-seccomp: wrote %s%s\n", out,
+            allow_nested_bwrap ? " (nested-bwrap variant)" : "");
     return 0;
 }

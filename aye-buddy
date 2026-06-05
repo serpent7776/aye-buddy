@@ -26,11 +26,21 @@ for my $cmd (qw(bwrap claude)) {
     on_path($cmd) or fail("required command not found on PATH: $cmd");
 }
 
+# --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing).
+# Opt-in: it widens the syscall surface (mount/namespace calls) and forces
+# Landlock off, so the bwrap mount-namespace allowlist becomes the only outer
+# wall. Strip it from @ARGV so it isn't forwarded to claude.
+my $allow_bwrap = 0;
+@ARGV = grep { $_ eq '--allow-bwrap' ? ($allow_bwrap = 1, 0)[1] : 1 } @ARGV;
+
 # $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
 # The helpers live next to the installed script.
 my $self_dir     = $RealBin;
 my $ll_helper    = "$self_dir/ll-helper";
-my $seccomp_blob = "$self_dir/filter.bpf";
+# Under --allow-bwrap the relaxed blob re-allows the mount/namespace syscalls a
+# nested bwrap needs; everything else stays denied.
+my $seccomp_blob = $allow_bwrap ? "$self_dir/filter-nested.bpf"
+                                : "$self_dir/filter.bpf";
 
 # Where ll-helper is mounted *inside* the sandbox.
 my $ll_dest = '/tmp/.aye-buddy-ll-helper';
@@ -38,6 +48,16 @@ my $ll_dest = '/tmp/.aye-buddy-ll-helper';
 my $use_landlock = 1;
 if (!-r $ll_helper) {
     warning("ll-helper not found ($ll_helper); Landlock layer off");
+    $use_landlock = 0;
+}
+
+# A nested bwrap mounts fresh tmpfs and pivot_roots into a new root; those inodes
+# sit beneath no path in the Landlock ruleset, so the ruleset would deny the
+# inner sandbox's own files and break it. Drop Landlock for the session — the
+# bwrap mount-namespace allowlist still bounds what's visible.
+if ($allow_bwrap) {
+    warning("--allow-bwrap: nested bwrap enabled — mount/namespace syscalls "
+          . "permitted and Landlock disabled; isolation is reduced");
     $use_landlock = 0;
 }
 

@@ -27,11 +27,11 @@ printf 'installed %s -> %s\n' "$SCRIPT" "$BINDIR/$SCRIPT"
 
 # Companion files for the defense-in-depth layers (see TODO.md). aye-buddy
 # looks for these next to itself: ll-helper drives the Landlock ruleset,
-# filter.bpf is the precompiled seccomp denylist. Both are optional at runtime
-# — aye-buddy warns and degrades to bwrap-only if either is missing — so a
-# missing filter.bpf (needs `make seccomp`, which wants libseccomp) is only a
-# warning here, not a failure.
-for f in ll-helper filter.bpf; do
+# filter.bpf is the precompiled seccomp denylist, filter-nested.bpf its relaxed
+# --allow-bwrap variant. All optional at runtime — aye-buddy warns and degrades
+# if one is missing — so a missing blob (needs `make seccomp`, which wants
+# libseccomp) is only a warning here, not a failure.
+for f in ll-helper filter.bpf filter-nested.bpf; do
     if [ -f "$SRC_DIR/$f" ]; then
         mode=0644
         [ "$f" = ll-helper ] && mode=0755

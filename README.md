@@ -90,6 +90,39 @@ so error messages and stack traces open correctly in your host editor
 and Claude's own per-project state stays coherent with host-run
 sessions.
 
+### `--allow-bwrap` (nested sandboxing)
+
+By default the session can't run `bwrap` itself: the seccomp denylist
+blocks the `unshare`/`clone`/`mount`/`pivot_root` syscalls bubblewrap
+needs (so a session can't spin up new namespaces), and the Landlock
+ruleset would deny the inner sandbox's fresh mounts anyway. Pass
+`--allow-bwrap` (an `aye-buddy` flag — it's stripped before the rest of
+the arguments reach `claude`) to let the session build its own inner
+sandboxes:
+
+```
+aye-buddy --allow-bwrap -p "run the test suite under bwrap"
+```
+
+It is opt-in because it widens the trust boundary:
+
+- the relaxed seccomp blob (`filter-nested.bpf`) re-allows only the five
+  calls bwrap actually uses to build a sandbox — `unshare`, `mount`,
+  `umount2`, `pivot_root`, and `clone` with namespace flags. Everything
+  else stays denied, including the new mount API (`fsopen`, `open_tree`,
+  `move_mount`, …), `setns`, `chroot`, `ptrace`, `bpf`, the keyring, and
+  module loading.
+- **Landlock is turned off for the session.** A nested `bwrap` mounts a
+  fresh tmpfs and `pivot_root`s into a new root; those inodes sit beneath
+  no path in the ruleset, so Landlock would block the inner sandbox. The
+  bwrap mount-namespace allowlist is then the only outer filesystem wall
+  — still the same set of paths under "What the sandbox sees", just
+  without the second Landlock backstop.
+
+The host kernel must permit nested unprivileged user namespaces (the
+default where `bwrap` already works unprivileged). `aye-buddy` prints a
+warning when the flag is active so the reduced isolation isn't silent.
+
 ## What the sandbox sees
 
 Read-write:
