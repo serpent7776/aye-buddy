@@ -26,12 +26,31 @@ for my $cmd (qw(bwrap claude)) {
     on_path($cmd) or fail("required command not found on PATH: $cmd");
 }
 
-# --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing).
-# Opt-in: it widens the syscall surface (mount/namespace calls) and forces
-# Landlock off, so the bwrap mount-namespace allowlist becomes the only outer
-# wall. Strip it from @ARGV so it isn't forwarded to claude.
+# Pull aye-buddy's own options off the front of @ARGV; the rest forwards to claude.
+#   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing).
+#     Opt-in: it widens the syscall surface (mount/namespace calls) and forces
+#     Landlock off, so the bwrap mount-namespace allowlist becomes the only outer
+#     wall.
+#   --bind/--bind-ro PATH expose an extra host path at the same path inside the
+#     sandbox (rw/ro). Repeatable. Resolved here so claude never sees them.
 my $allow_bwrap = 0;
-@ARGV = grep { $_ eq '--allow-bwrap' ? ($allow_bwrap = 1, 0)[1] : 1 } @ARGV;
+my (@extra_rw, @extra_ro);
+while (@ARGV) {
+    my $arg = $ARGV[0];
+    if ($arg eq '--allow-bwrap') {
+        $allow_bwrap = 1;
+        shift @ARGV;
+    } elsif ($arg eq '--bind' || $arg eq '--bind-ro') {
+        shift @ARGV;
+        my $path = shift @ARGV
+            // fail("$arg requires a PATH argument");
+        my $abs = Cwd::abs_path($path)
+            // fail("$arg: cannot resolve path: $path");
+        push @{ $arg eq '--bind' ? \@extra_rw : \@extra_ro }, $abs;
+    } else {
+        last;
+    }
+}
 
 # $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
 # The helpers live next to the installed script.
@@ -143,6 +162,9 @@ try_ro("$home/.claude/scripts");
 try_ro("$home/.claude/mcp.json");
 try_ro("$home/.claude/.mcp.json");
 bind_rw($claude_json);
+# User-requested extra paths, bound at the same path inside the sandbox.
+bind_rw($_) for @extra_rw;
+bind_ro($_) for @extra_ro;
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");
 try_ro("$home/.ssh/config");

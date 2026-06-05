@@ -90,6 +90,23 @@ so error messages and stack traces open correctly in your host editor
 and Claude's own per-project state stays coherent with host-run
 sessions.
 
+### `--bind` / `--bind-ro` (extra paths)
+
+By default only the project root and a fixed set of `~/.claude` paths are
+reachable. Pass `--bind PATH` (read-write) or `--bind-ro PATH`
+(read-only) to expose an additional host path, mounted at the *same* path
+inside the sandbox. Both are `aye-buddy` flags — they're stripped before
+the rest of the arguments reach `claude` — and both are repeatable:
+
+```
+aye-buddy --bind-ro /data/refs --bind ~/scratch -p "compare against the refs"
+```
+
+Paths are resolved relative to the current directory and added to the
+Landlock ruleset, so they work the same with or without `--allow-bwrap`.
+`aye-buddy`'s own flags must come before any arguments meant for
+`claude`.
+
 ### `--allow-bwrap` (nested sandboxing)
 
 By default the session can't run `bwrap` itself: the seccomp denylist
