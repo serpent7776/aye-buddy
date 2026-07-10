@@ -71,7 +71,7 @@ inner='
 set -u
 P="$HTTP_PROXY"
 gw=$(printf "%s" "$P" | sed -E "s#^http://([^:]+):.*#\1#")
-lan=$(printf "%s" "$gw" | sed -E "s#\.[0-9]+$#.254#")   # same /24, a different host
+lan="${gw%.*}.254"   # same /24, a different host (avoid sed: $# is a bash param)
 echo "--- ns routes ---"; ip -4 route show
 rc=0
 
@@ -109,12 +109,14 @@ exit $rc
 
 status=0
 
+# --ipv4-only mirrors aye-buddy's real pasta invocation (and silences pasta's
+# IPv6 "local mode" template notes).
 echo; echo "=== mode: tight (default) — only the proxy is reachable ==="
-EXPECT_LAN=blocked pasta --config-net -- \
+EXPECT_LAN=blocked pasta --config-net --ipv4-only -- \
     "$net_helper" "$PROXY_PORT" - -- bash -c "$inner" || status=1
 
 echo; echo "=== mode: --allow-subnet — LAN stays reachable (fallback) ==="
-EXPECT_LAN=reachable pasta --config-net -- \
+EXPECT_LAN=reachable pasta --config-net --ipv4-only -- \
     "$net_helper" "$PROXY_PORT" - --allow-subnet -- bash -c "$inner" || status=1
 
 echo
