@@ -70,6 +70,41 @@ sub resolve_bind {
 @extra_rw = map { resolve_bind('--bind',    $_) } @extra_rw;
 @extra_ro = map { resolve_bind('--bind-ro', $_) } @extra_ro;
 
+# --- Network egress policy ------------------------------------------------
+# The canonical allowlist of hosts a session may reach. The filtering layer
+# (a netns whose only uplink is a proxy that enforces this list — wired
+# separately) is generated from here, so this is the single source of truth.
+# Kept deliberately small: every reachable host is also a possible exfil/C2
+# destination, so the default set is only what a session genuinely needs.
+# SSH git hosts are intentionally absent — reaching them is the raw-TCP lane
+# (opened per host), because an open host:22 doubles as a reverse-shell target.
+my @default_allow_hosts = (
+    # Claude API, telemetry, OAuth — without these the session can't run
+    'api.anthropic.com',
+    'statsig.anthropic.com',
+    'sentry.io',
+    'console.anthropic.com',
+    # npm
+    'registry.npmjs.org',
+    # PyPI
+    'pypi.org',
+    'files.pythonhosted.org',
+    # crates.io
+    'crates.io',
+    'static.crates.io',
+    # Go modules
+    'proxy.golang.org',
+    'sum.golang.org',
+    # git over HTTPS (SSH hosts go through --allow-host, not here)
+    'github.com',
+    'codeload.github.com',
+    'objects.githubusercontent.com',
+    'gitlab.com',
+);
+my @allow_hosts = @default_allow_hosts;
+print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
+    if $ENV{AYE_BUDDY_DEBUG};
+
 # $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
 # The helpers live next to the installed script.
 my $self_dir     = $RealBin;
