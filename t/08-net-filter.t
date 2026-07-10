@@ -17,6 +17,7 @@ subtest 'default: sandbox runs under pasta with proxy env, no --share-net' => su
     ok has($r, 'bwrap'), 'bwrap nested in the launch chain';
     ok +(grep { m{aye-net-helper} } @{$r->{argv}}), 'aye-net-helper in the chain';
     ok has($r, '@@AYE_PROXY@@'), 'proxy URL placeholder is set for the helper';
+    ok has($r, 'IS_SANDBOX'), 'IS_SANDBOX set (pasta userns runs claude as uid 0)';
     ok !has($r, '--share-net'), 'host network is NOT shared under filtering';
 };
 
@@ -26,6 +27,7 @@ subtest '--no-net-filter: exec bwrap directly and share the host network' => sub
     ok has($r, '--share-net'), 'shares the host network';
     ok !has($r, '--config-net'), 'no pasta wrapper';
     ok !has($r, '@@AYE_PROXY@@'), 'no proxy env injected';
+    ok !has($r, 'IS_SANDBOX'), 'no root escape hatch (runs as the real uid)';
 };
 
 subtest '--no-net-filter after claude args is a misplaced-flag error' => sub {

@@ -326,12 +326,19 @@ if ($use_landlock) {
 # Point claude's clients at the proxy. aye-net-helper rewrites @@AYE_PROXY@@ to
 # the real URL inside the netns (only there is the gateway address known), and
 # --clearenv above means these are the only proxy vars the session sees.
+#
+# IS_SANDBOX=1 lets claude run --dangerously-skip-permissions as uid 0. pasta
+# runs the session in a user namespace where it's root — but that root maps to
+# the unprivileged real user on the host, so it isn't real root. Without this
+# claude refuses ("cannot be used with root/sudo"). Only the filtered (pasta)
+# path is uid 0; the --share-net path keeps the real uid and doesn't need it.
 if ($net_filter) {
     push @args,
         '--setenv', 'HTTP_PROXY',  '@@AYE_PROXY@@',
         '--setenv', 'HTTPS_PROXY', '@@AYE_PROXY@@',
         '--setenv', 'http_proxy',  '@@AYE_PROXY@@',
-        '--setenv', 'https_proxy', '@@AYE_PROXY@@';
+        '--setenv', 'https_proxy', '@@AYE_PROXY@@',
+        '--setenv', 'IS_SANDBOX',  '1';
 }
 
 push @args,
