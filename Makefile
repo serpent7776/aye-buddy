@@ -9,10 +9,18 @@
 CC ?= cc
 CFLAGS ?= -O2 -Wall
 
-.PHONY: install uninstall seccomp clean
+.PHONY: install uninstall seccomp clean test
 
 install:
 	@./install.sh
+
+# Black-box tests for aye-buddy's option parsing (core Perl only, no CPAN deps).
+# Run with prove; fall back to prove in Perl's scriptdir when it's off PATH
+# (e.g. Arch/Manjaro keep it in /usr/bin/core_perl).
+PROVE ?= prove
+test:
+	@P=$$(command -v $(PROVE) || echo "$$(perl -MConfig -e 'print $$Config{scriptdir}')/prove"); \
+	"$$P" -lr t/
 
 # Rebuild the committed seccomp blobs from source.
 seccomp: filter.bpf filter-nested.bpf
