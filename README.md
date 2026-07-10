@@ -206,6 +206,12 @@ Forwarded:
   credentials, arbitrary shell exports) is cleared by `--clearenv` so it
   doesn't leak into the sandbox. If a session genuinely needs an extra
   variable, set it after `claude` starts or wire it into the wrapper.
+- `DISABLE_TELEMETRY=1` and `DISABLE_ERROR_REPORTING=1` are set to stop
+  claude's non-essential telemetry/error egress (Datadog/Statsig/Sentry)
+  at the source. The narrow vars are used deliberately — not the broad
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which would also disable the
+  auto-updater's security patches, feature flags, and TUI mouse clicks.
+  Anything that still dials out is caught by the egress allowlist anyway.
 
 Deliberately not bound: `~/.ssh/` private keys, `~/.aws`,
 `~/.config/gcloud`, `~/.kube`, `~/.netrc`, browser profiles, password

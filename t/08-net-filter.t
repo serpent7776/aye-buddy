@@ -22,6 +22,7 @@ subtest 'default: sandbox runs under pasta with proxy env, no --share-net' => su
     ok defined $i && ($r->{argv}[$i + 1] // '') =~ /^\d+$/, '--uid carries a numeric value';
     ok !has($r, 'IS_SANDBOX'), 'no root escape hatch — claude sees a normal uid';
     ok !has($r, '--share-net'), 'host network is NOT shared under filtering';
+    ok has($r, 'DISABLE_TELEMETRY'), 'telemetry disabled at the source';
 };
 
 subtest '--no-net-filter: exec bwrap directly and share the host network' => sub {

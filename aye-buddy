@@ -281,7 +281,14 @@ push @args,
     # Tell claude it's already inside an external sandbox so it skips the
     # workspace trust dialog (the bwrap boundary is the actual trust
     # decision here).
-    '--setenv', 'CLAUDE_CODE_SANDBOXED', '1';
+    '--setenv', 'CLAUDE_CODE_SANDBOXED', '1',
+    # Stop non-essential telemetry/error egress at the source (Datadog/Statsig/
+    # Sentry). Targeted vars, not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC —
+    # that one also disables the auto-updater (CVE patches), feature flags, and
+    # TUI mouse clicks. Anything that still dials out is caught by the proxy
+    # allowlist anyway, so this just spares the noise.
+    '--setenv', 'DISABLE_TELEMETRY', '1',
+    '--setenv', 'DISABLE_ERROR_REPORTING', '1';
 for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
                 LC_MONETARY COLORTERM NO_COLOR)) {
     my $val = $ENV{$var};
