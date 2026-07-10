@@ -26,6 +26,7 @@ net_helper="$here/aye-net-helper"
 ALLOWED_HOST=${ALLOWED_HOST:-example.com}      # on the allowlist
 DENIED_HOST=${DENIED_HOST:-cloudflare.com}     # deliberately not
 BLOCKHOLE_IP=${BLOCKHOLE_IP:-1.1.1.1}          # off-subnet raw-egress probe
+BLOCKHOLE_V6=${BLOCKHOLE_V6:-2606:4700:4700::1111}  # IPv6 raw-egress probe
 
 command -v pasta  >/dev/null || { echo "SKIP: pasta not installed"; exit 2; }
 command -v curl   >/dev/null || { echo "SKIP: curl not installed";  exit 2; }
@@ -66,7 +67,7 @@ echo "decoy host-loopback service on 127.0.0.1:$DECOY_PORT (must stay unreachabl
 # already restricted the route and exported HTTP(S)_PROXY; here we just probe.
 # EXPECT_LAN ("blocked"/"reachable") is the mode-specific expectation for a
 # same-subnet host. Vars flow through pasta -> helper -> bash.
-export ALLOWED_HOST DENIED_HOST BLOCKHOLE_IP DECOY_PORT
+export ALLOWED_HOST DENIED_HOST BLOCKHOLE_IP BLOCKHOLE_V6 DECOY_PORT
 inner='
 set -u
 P="$HTTP_PROXY"
@@ -91,6 +92,12 @@ else echo "PASS  raw egress to $BLOCKHOLE_IP blocked (no route)"; fi
 if timeout 6 bash -c "exec 3<>/dev/tcp/$BLOCKHOLE_IP/443" 2>/dev/null; then
     echo "FAIL  /dev/tcp to $BLOCKHOLE_IP:443 connected"; rc=1
 else echo "PASS  /dev/tcp reverse-shell primitive blocked"; fi
+
+# IPv6 egress: sealed at the routes (v6 default dropped) AND by the nft v6 drop,
+# so no v6 path out — not to the internet, and not to the host-loopback mapping.
+if timeout 6 curl -6 -sS --noproxy "*" -o /dev/null "https://[$BLOCKHOLE_V6]/" 2>/dev/null; then
+    echo "FAIL  IPv6 raw egress to $BLOCKHOLE_V6 succeeded — v6 side channel open"; rc=1
+else echo "PASS  IPv6 raw egress to $BLOCKHOLE_V6 blocked"; fi
 
 # Host-loopback side channel (M1): the gateway maps to the host loopback, so the
 # decoy service must NOT be reachable at gw:DECOY_PORT — only the proxy port is.

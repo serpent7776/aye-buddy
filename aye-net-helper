@@ -13,8 +13,10 @@
 #      outright. Finally it VERIFIES the seal actually holds — no route to the
 #      wider internet survived — and refuses to launch if it can't prove that,
 #      rather than run a session that looks filtered but isn't. It also installs
-#      an nft filter dropping all but the proxy port on the gateway, so the
-#      pasta host-loopback mapping can't expose other 127.0.0.1 host services.
+#      an nft filter dropping all but the proxy port on the gateway (so the pasta
+#      host-loopback mapping can't expose other 127.0.0.1 host services) and
+#      dropping all IPv6 egress — the proxy is IPv4-only, so no v6 path out (the
+#      loopback mapping or a link-local gateway) is ever legitimate.
 #   2. rewrites @@AYE_PROXY@@ in the target argv to the proxy URL and exports
 #      HTTP(S)_PROXY, so both bwrap's --setenv values and plain clients pick it
 #      up.
@@ -132,16 +134,18 @@ sub egress_sealed {
     return 1;
 }
 
-# Install an nft OUTPUT filter allowing only tcp/$p to the gateway and dropping
-# everything else addressed to it; policy stays accept so non-gateway traffic is
-# governed by routing alone. $gw comes from `ip route` (an IPv4 literal) and $p
-# from argv — validate both before they reach the ruleset, and feed nft via a
-# pipe (no shell) so neither can inject.
+# Install an nft OUTPUT filter: allow only tcp/$p to the gateway, drop everything
+# else addressed to it, and drop all IPv6 egress (netns loopback stays up). The
+# proxy is IPv4-only, so v6 has no legitimate path out — this closes the v6 twin
+# of the host-loopback side channel the v4 rule handles. Policy stays accept so
+# other v4 traffic is governed by routing alone. $gw comes from `ip route` (an
+# IPv4 literal) and $p from argv — validate both before they reach the ruleset,
+# and feed nft via a pipe (no shell) so neither can inject.
 sub restrict_gateway_to_proxy {
     my ($gw, $p) = @_;
     $p  =~ /\A[0-9]+\z/     or return warn_h("proxy port '$p' not numeric; skipping loopback hardening");
     $gw =~ /\A[0-9.]+\z/    or return warn_h("gateway '$gw' not an IPv4 literal; skipping loopback hardening");
-    my $skipped = "host-loopback services stay reachable via the gateway (internet egress is still sealed)";
+    my $skipped = "host-loopback and IPv6 side channels stay reachable (the internet route seal still holds)";
     # If nft is missing the piped child's exec fails and the write below hits a
     # dead pipe; ignore SIGPIPE so that degrades to a warning instead of killing
     # the helper (which would abort the whole launch).
@@ -152,8 +156,10 @@ sub restrict_gateway_to_proxy {
 table inet aye_egress {
     chain output {
         type filter hook output priority 0; policy accept;
+        oif "lo" accept
         ip daddr $gw tcp dport $p accept
         ip daddr $gw drop
+        meta nfproto ipv6 drop
     }
 }
 NFT
