@@ -5,6 +5,7 @@ use strict;
 use warnings;
 use Cwd ();
 use POSIX ();
+use Getopt::Long qw(GetOptions);
 use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
 use FindBin qw($RealBin);
 use File::Path qw(make_path);
@@ -26,38 +27,27 @@ for my $cmd (qw(bwrap claude)) {
     on_path($cmd) or fail("required command not found on PATH: $cmd");
 }
 
-# Pull aye-buddy's own options off the front of @ARGV; the rest forwards to
-# claude. Ours must lead: parsing stops at the first non-option, or at a `--`
-# separator (consumed, so a literal `--allow-bwrap` etc. can still reach claude).
-#   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing).
-#     Opt-in: it widens the syscall surface (mount/namespace calls) and forces
-#     Landlock off, so the bwrap mount-namespace allowlist becomes the only outer
-#     wall.
+# Parse aye-buddy's own options off the front of @ARGV; the rest forwards to
+# claude. require_order stops at the first non-option and pass_through leaves the
+# remainder in @ARGV; no_auto_abbrev/no_ignore_case keep our flags exact-match so
+# a claude arg can't accidentally trigger one (e.g. `--all` is not --allow-bwrap).
+#   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing):
+#     opt-in, it widens the syscall surface and forces Landlock off, leaving the
+#     bwrap mount-namespace allowlist as the only outer wall.
 #   --bind/--bind-ro PATH expose an extra host path at the same path inside the
-#     sandbox (rw/ro). Repeatable. Resolved here so claude never sees them.
+#     sandbox (rw/ro). Repeatable. Resolved below so claude never sees them. `:s`
+#     (optional value) so a missing PATH lands as '' we can reject, rather than
+#     swallowing the next flag as the path.
+Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap = 0;
 my (@extra_rw, @extra_ro);
-my $saw_sep = 0;
-while (@ARGV) {
-    my $arg = $ARGV[0];
-    if ($arg eq '--') {
-        shift @ARGV;
-        $saw_sep = 1;
-        last;
-    } elsif ($arg eq '--allow-bwrap') {
-        $allow_bwrap = 1;
-        shift @ARGV;
-    } elsif ($arg eq '--bind' || $arg eq '--bind-ro') {
-        shift @ARGV;
-        my $path = shift @ARGV
-            // fail("$arg requires a PATH argument");
-        my $abs = Cwd::abs_path($path)
-            // fail("$arg: cannot resolve path: $path");
-        push @{ $arg eq '--bind' ? \@extra_rw : \@extra_ro }, $abs;
-    } else {
-        last;
-    }
-}
+GetOptions('allow-bwrap' => \$allow_bwrap,
+           'bind:s'      => \@extra_rw,
+           'bind-ro:s'   => \@extra_ro)
+    or fail("invalid aye-buddy option");
+# pass_through leaves a leading `--` in place; consume it as our separator so a
+# literal `--allow-bwrap` etc. can still reach claude untouched.
+my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
 # Without an explicit `--`, an aye-buddy flag among the leftover claude args is a
 # misplaced flag, not a claude one: fail loudly rather than forward it silently.
 if (!$saw_sep) {
@@ -67,6 +57,10 @@ if (!$saw_sep) {
              "  move it before them, or use `--` to force it through to claude.");
     }
 }
+@extra_rw = map { length or fail("--bind requires a PATH argument");
+                  Cwd::abs_path($_) // fail("--bind: cannot resolve path: $_") } @extra_rw;
+@extra_ro = map { length or fail("--bind-ro requires a PATH argument");
+                  Cwd::abs_path($_) // fail("--bind-ro: cannot resolve path: $_") } @extra_ro;
 
 # $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
 # The helpers live next to the installed script.
