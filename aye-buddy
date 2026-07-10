@@ -402,8 +402,8 @@ unless ($net_filter) {
 # 1. Start aye-proxy; read the ephemeral port it binds from its stdout. The
 #    allowlist is passed via the environment so it isn't exposed in `ps`. The
 #    proxy's diagnostics (blocked hosts) go to a log file, NOT the shared
-#    terminal — otherwise they'd scribble over claude's TUI. AYE_BUDDY_DEBUG
-#    prints the path so you know where to look.
+#    terminal — otherwise they'd scribble over claude's TUI. The log is removed
+#    on exit; AYE_BUDDY_DEBUG prints its path and keeps it for inspection.
 my $proxy_log = ($ENV{TMPDIR} // '/tmp') . "/aye-proxy.$$.log";
 warning("egress proxy log: $proxy_log") if $ENV{AYE_BUDDY_DEBUG};
 pipe(my $proxy_rd, my $proxy_wr) or fail("pipe: $!");
@@ -422,6 +422,7 @@ close $proxy_rd;
 my ($proxy_port) = ($port_line // '') =~ /port=(\d+)/;
 unless ($proxy_port) {
     kill 'TERM', $proxy_pid;
+    unlink $proxy_log unless $ENV{AYE_BUDDY_DEBUG};
     fail("aye-proxy did not report a listening port");
 }
 
@@ -444,4 +445,6 @@ waitpid($sandbox_pid, 0);
 my $status = $?;
 kill 'TERM', $proxy_pid;
 waitpid($proxy_pid, 0);
+# Drop the proxy log on a clean exit; keep it under debug for inspection.
+unlink $proxy_log unless $ENV{AYE_BUDDY_DEBUG};
 exit($status & 127 ? 128 + ($status & 127) : $status >> 8);

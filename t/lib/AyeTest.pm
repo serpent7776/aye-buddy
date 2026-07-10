@@ -59,6 +59,7 @@ sub run_aye {
         # Child: isolated env, run inside the temp repo, capture std streams.
         $ENV{PATH} = "$root/bin";       # only our stubs; keep it hermetic
         $ENV{HOME} = "$root/home";
+        $ENV{TMPDIR} = $root;           # proxy log lands here, cleaned with $root
         delete $ENV{SSH_AUTH_SOCK};     # keep the bwrap argv deterministic
         chdir "$root/repo" or die "chdir: $!";
         open my $o, '>', $outf or die $!;
