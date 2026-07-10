@@ -138,6 +138,10 @@ mount_rw('--dev',   '/dev');
 mount_rw('--tmpfs', '/tmp');
 mount_rw('--tmpfs', $home);
 bind_rw($project_dir);
+# User-requested extra paths, at the same path inside the sandbox. Bound before
+# the ro overlays below so those guards still win where a bind overlaps them.
+bind_rw($_) for @extra_rw;
+bind_ro($_) for @extra_ro;
 # Host git runs .git/hooks scripts and .git/config knobs (core.fsmonitor,
 # core.sshCommand, bang-aliases) next time the user touches the repo outside the
 # sandbox. Keep them ro so a session can't plant code the host will later run.
@@ -162,9 +166,6 @@ try_ro("$home/.claude/scripts");
 try_ro("$home/.claude/mcp.json");
 try_ro("$home/.claude/.mcp.json");
 bind_rw($claude_json);
-# User-requested extra paths, bound at the same path inside the sandbox.
-bind_rw($_) for @extra_rw;
-bind_ro($_) for @extra_ro;
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");
 try_ro("$home/.ssh/config");
