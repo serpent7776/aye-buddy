@@ -14,9 +14,19 @@ prompt injection in a fetched page, dependency README, or issue comment
 tells it to exfiltrate.
 
 `aye-buddy` defends against **read exfiltration**. Out of scope: kernel
-escape, network egress filtering (the sandbox keeps full network access
-for the Claude API and package installs), and anything the user runs
-outside the wrapper.
+escape and anything the user runs outside the wrapper.
+
+It also filters **network egress** (on by default), which blunts the
+reverse-shell class of attack — e.g. an injected instruction that runs a
+"recovery" command which opens a shell to an attacker host. The session
+reaches the network only through a bundled filtering proxy that permits a
+small allowlist of hosts (the Claude API, common package registries, git
+over HTTPS); everything else has no route out, so a raw-socket shell can't
+connect. This is egress *control*, not *prevention* — see the caveats
+under [Network egress filtering](#network-egress-filtering) — but it turns
+"full machine compromise" into "a shell confined to the sandbox with no
+way to phone home". Pass `--no-net-filter` to fall back to full network
+access.
 
 It also blocks one escape that filesystem isolation alone doesn't:
 **terminal injection**. The session shares your controlling terminal, so
@@ -32,6 +42,8 @@ closes it on older kernels too rather than relying on that.
 
 - `bwrap` (bubblewrap)
 - `claude` (Claude Code CLI)
+- `pasta` (from `passt`) — for the default egress filter; not needed with
+  `--no-net-filter`
 - a `git` or `jj` repository (the wrapper refuses to run outside one)
 
 ## Install
@@ -186,7 +198,8 @@ Forwarded:
 
 - the SSH agent socket if `SSH_AUTH_SOCK` is set (signs for git/ssh
   without exposing key material)
-- network (`--share-net`)
+- network — filtered through the egress proxy by default (see below), or
+  the host network directly under `--no-net-filter`
 - a minimal environment subset — `PATH`, `HOME`, `USER`, `LOGNAME`,
   `TERM`, `LANG`, any `LC_*` you have set, `COLORTERM`, `NO_COLOR`, and
   `SSH_AUTH_SOCK`. Every other host env var (API tokens, cloud
@@ -200,6 +213,60 @@ stores, other projects under `$HOME`, `/home/<other-users>`, `/root`,
 `/var`, `/srv`. `$HOME` starts as a fresh tmpfs and only the paths
 listed above are mounted into it; everything else is invisible.
 
+## Network egress filtering
+
+On by default. The sandbox runs in a network namespace whose only uplink
+is a bundled filtering proxy (`aye-proxy`), so every outbound connection
+is either an allowlisted HTTPS host tunnelled through the proxy or has no
+route at all. A reverse shell — a raw socket to an attacker host — falls
+in the second bucket and simply cannot connect.
+
+How it fits together: aye-buddy starts `aye-proxy` on the host, then
+launches the sandbox under `pasta` (`pasta → aye-net-helper → bwrap →
+claude`). `pasta` gives the namespace a userspace uplink; `aye-net-helper`
+drops the default route so only the proxy (reached via the pasta gateway)
+remains, and points `HTTP(S)_PROXY` at it. `pasta` must be the parent of
+`bwrap` because it needs `sethostname`/namespace syscalls that `bwrap`'s
+seccomp denies — so it runs before the filter is installed.
+
+The builtin allowlist covers the Claude API and telemetry, the major
+package registries (npm, PyPI, crates.io, Go), and git over HTTPS. Add
+more with `--allow-host`:
+
+```
+aye-buddy --allow-host git.internal.corp --allow-host registry.example:443
+```
+
+`--allow-host HOST[:PORT]` is repeatable; a port-less host permits 80/443,
+`HOST:PORT` permits exactly that port. It's an `aye-buddy` flag (stripped
+before `claude`, same placement rules as `--bind`).
+
+Note that WebSearch runs server-side on Anthropic's infrastructure, so it
+keeps working regardless; only WebFetch (which fetches from your machine)
+is subject to the allowlist, and reaching an off-list site returns a
+proxy `403`.
+
+**This is egress control, not egress prevention — know the residual
+risks:**
+
+- **Exfil through allowed hosts.** Anything you allowlist is a two-way
+  channel. Data can still leave via, say, a GitHub gist or an allowed
+  package registry. Keep the list minimal.
+- **No TLS interception.** The proxy allows a `CONNECT` by its hostname
+  without terminating TLS, so SNI spoofing / domain fronting can reach an
+  off-list host that shares infrastructure with an allowed one.
+- **Same-subnet hosts stay reachable.** Only the default route is dropped,
+  so a host on the same LAN subnet as the pasta gateway still has a route.
+  Tightening this to a single gateway host-route is a TODO.
+- **SSH git needs a hole.** SSH remotes don't traverse an HTTP proxy;
+  prefer HTTPS remotes, or allowlist the git host — a raw-TCP lane for
+  `HOST:22` is not wired yet (`--allow-host` currently feeds the HTTPS
+  proxy allowlist).
+
+`--no-net-filter` turns all of this off and restores full `--share-net`
+network access — useful for debugging or workloads the allowlist can't
+express yet.
+
 ## Tests
 
 ```
@@ -207,10 +274,12 @@ make test
 ```
 
 Black-box tests for `aye-buddy`'s option parsing (`t/`). Each test runs
-the real script against a stub `bwrap` placed first on a hermetic
+the real script against stub `bwrap`/`pasta` placed first on a hermetic
 `PATH`, then asserts on the argv the script would have `exec`'d — so the
 actual flag parsing, `--` handling, path resolution, and forwarding are
-exercised end to end without launching a real sandbox.
+exercised end to end without launching a real sandbox. `aye-proxy` has
+its own loopback tests; the full egress mechanism (which needs real
+namespaces) is verified out-of-band by `t/manual/egress-check.sh`.
 
 ## Limitations
 
