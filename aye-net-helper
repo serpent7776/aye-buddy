@@ -1,0 +1,57 @@
+#!/usr/bin/env perl
+# aye-net-helper: the netns-side of aye-buddy's egress filtering.
+#
+# pasta spawns this inside the fresh user+net namespace (so it runs as root in
+# that userns, with CAP_NET_ADMIN over the netns) BEFORE bwrap. It:
+#   1. drops the default route pasta installed, so the wider internet has no
+#      path out — a raw-socket reverse shell cannot connect anywhere. The
+#      pasta gateway stays reachable (it is where the host, and thus aye-proxy,
+#      is mapped), so allowlisted HTTPS still flows through the proxy.
+#   2. rewrites @@AYE_PROXY@@ in the target argv to the proxy URL and exports
+#      HTTP(S)_PROXY, so both bwrap's --setenv values and plain clients pick it
+#      up.
+#   3. reopens the seccomp blob on fd 3 for `bwrap --seccomp 3` — pasta need
+#      not preserve inherited fds across exec, so we own that fd here.
+# then execs the target (bwrap, or in the test harness a probe command).
+#
+# NOTE: only the default route is dropped, so hosts on the same subnet as the
+# pasta gateway remain reachable (a LAN-scoped residual). Tightening that to a
+# single gateway host-route needs its own verification and is left as a TODO.
+use strict;
+use warnings;
+use POSIX ();
+use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
+
+sub die_h { print STDERR "aye-net-helper: $_[0]\n"; exit 1 }
+
+# argv: PROXY_PORT  SECCOMP(-|path)  --  CMD [ARG...]
+my $port    = shift // die_h('usage: aye-net-helper PORT SECCOMP -- CMD...');
+my $seccomp = shift // die_h('missing SECCOMP argument (path or -)');
+my $sep     = shift // '';
+$sep eq '--' or die_h('expected -- separator before the command');
+my @cmd = @ARGV;
+@cmd or die_h('no command to exec');
+
+# Discover the gateway pasta configured, then remove the default route.
+my ($gwaddr) = (qx(ip -4 route show default 2>/dev/null) =~ /default via (\S+)/);
+$gwaddr or die_h('no default route present (is pasta --config-net active?)');
+system('ip', 'route', 'del', 'default');    # best-effort; gateway stays on-link
+
+# Point clients at the proxy (reached via the gateway, which pasta maps to the
+# host where aye-proxy listens).
+my $url = "http://$gwaddr:$port";
+s/\@\@AYE_PROXY\@\@/$url/g for @cmd;
+$ENV{$_} = $url for qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy);
+
+# Reopen the seccomp blob on fd 3 (kept in scope until exec, cloexec cleared).
+my $keep;
+if ($seccomp ne '-') {
+    open($keep, '<', $seccomp) or die_h("open seccomp $seccomp: $!");
+    POSIX::dup2(fileno($keep), 3) == 3 or die_h("dup2 fd3: $!");
+    open(my $fd3, '<&=', 3) or die_h("reopen fd3: $!");
+    my $fl = fcntl($fd3, F_GETFD, 0);
+    fcntl($fd3, F_SETFD, $fl & ~FD_CLOEXEC) or die_h("clear cloexec: $!");
+    $keep = $fd3;
+}
+
+exec { $cmd[0] } @cmd or die_h("exec $cmd[0]: $!");
