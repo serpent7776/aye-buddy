@@ -393,12 +393,18 @@ unless ($net_filter) {
 # proxy URL, and reopens the seccomp blob on fd 3 (pasta need not preserve fds).
 
 # 1. Start aye-proxy; read the ephemeral port it binds from its stdout. The
-#    allowlist is passed via the environment so it isn't exposed in `ps`.
+#    allowlist is passed via the environment so it isn't exposed in `ps`. The
+#    proxy's diagnostics (blocked hosts) go to a log file, NOT the shared
+#    terminal — otherwise they'd scribble over claude's TUI. AYE_BUDDY_DEBUG
+#    prints the path so you know where to look.
+my $proxy_log = ($ENV{TMPDIR} // '/tmp') . "/aye-proxy.$$.log";
+warning("egress proxy log: $proxy_log") if $ENV{AYE_BUDDY_DEBUG};
 pipe(my $proxy_rd, my $proxy_wr) or fail("pipe: $!");
 my $proxy_pid = fork // fail("fork proxy: $!");
 if ($proxy_pid == 0) {
     close $proxy_rd;
     open(STDOUT, '>&', $proxy_wr) or POSIX::_exit(127);
+    open(STDERR, '>>', $proxy_log);    # best-effort; keep denials off the TUI
     $ENV{AYE_PROXY_ALLOW} = join("\n", @allow_hosts);
     exec { $^X } $^X, $proxy_helper, '--addr', '127.0.0.1', '--port', '0'
         or POSIX::_exit(127);
