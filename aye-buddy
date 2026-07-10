@@ -40,10 +40,15 @@ for my $cmd (qw(bwrap claude)) {
 #     swallowing the next flag as the path.
 #   --allow-host HOST[:PORT] adds an extra host to the network egress allowlist
 #     on top of the builtin defaults. Repeatable; same `:s` reasoning.
+#   --net-filter / --no-net-filter toggles the egress filter (default on). When
+#     on, the session reaches the network only through the bundled proxy, so a
+#     reverse shell has no route out; --no-net-filter falls back to --share-net.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap = 0;
+my $net_filter  = 1;
 my (@extra_rw, @extra_ro, @extra_hosts);
 GetOptions('allow-bwrap' => \$allow_bwrap,
+           'net-filter!'  => \$net_filter,
            'bind:s'       => \@extra_rw,
            'bind-ro:s'    => \@extra_ro,
            'allow-host:s' => \@extra_hosts)
@@ -56,7 +61,8 @@ my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
 if (!$saw_sep) {
     for my $arg (@ARGV) {
         next unless $arg eq '--allow-bwrap' || $arg eq '--bind'
-                 || $arg eq '--bind-ro'     || $arg eq '--allow-host';
+                 || $arg eq '--bind-ro'     || $arg eq '--allow-host'
+                 || $arg eq '--net-filter'  || $arg eq '--no-net-filter';
         fail("$arg is an aye-buddy flag but came after claude's arguments;\n" .
              "  move it before them, or use `--` to force it through to claude.");
     }
@@ -125,6 +131,16 @@ print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
 # The helpers live next to the installed script.
 my $self_dir     = $RealBin;
 my $ll_helper    = "$self_dir/ll-helper";
+my $proxy_helper = "$self_dir/aye-proxy";
+my $net_helper   = "$self_dir/aye-net-helper";
+
+# Egress filtering needs pasta (userspace uplink) and the two bundled helpers.
+# Fail early with a clear message rather than deep inside the launch chain.
+if ($net_filter) {
+    on_path('pasta') or fail("--net-filter needs pasta (passt); install it or pass --no-net-filter");
+    -r $proxy_helper or fail("egress proxy not found: $proxy_helper");
+    -r $net_helper   or fail("egress net helper not found: $net_helper");
+}
 # Under --allow-bwrap the relaxed blob re-allows the mount/namespace syscalls a
 # nested bwrap needs; everything else stays denied.
 my $seccomp_blob = $allow_bwrap ? "$self_dir/filter-nested.bpf"
@@ -307,6 +323,17 @@ if ($use_landlock) {
     @payload = ('perl', $ll_dest, '--', @payload);
 }
 
+# Point claude's clients at the proxy. aye-net-helper rewrites @@AYE_PROXY@@ to
+# the real URL inside the netns (only there is the gateway address known), and
+# --clearenv above means these are the only proxy vars the session sees.
+if ($net_filter) {
+    push @args,
+        '--setenv', 'HTTP_PROXY',  '@@AYE_PROXY@@',
+        '--setenv', 'HTTPS_PROXY', '@@AYE_PROXY@@',
+        '--setenv', 'http_proxy',  '@@AYE_PROXY@@',
+        '--setenv', 'https_proxy', '@@AYE_PROXY@@';
+}
+
 push @args,
     '--chdir', $project_dir,
     '--unshare-user',
@@ -314,8 +341,12 @@ push @args,
     '--unshare-ipc',
     # Private UTS namespace so sethostname/setdomainname can't touch the host's.
     # The seccomp denylist also blocks those calls — defense in depth.
-    '--unshare-uts',
-    '--share-net',
+    '--unshare-uts';
+# Network namespace. With filtering, bwrap inherits pasta's netns (pasta is the
+# parent and owns the only uplink — the filtering proxy); without it, share the
+# host's network directly.
+push @args, '--share-net' unless $net_filter;
+push @args,
     # New session (setsid) so the process has no controlling terminal and can't
     # use the TIOCSTI ioctl to inject keystrokes into the host shell — the classic
     # interactive-sandbox escape. bwrap reconnects stdio so the TUI still works.
@@ -324,22 +355,70 @@ push @args,
     '--',
     @payload;
 
-# Wire the seccomp blob onto fd 3 for `--seccomp 3`. Perl opens fds close-on-exec,
-# so we dup the blob onto fd 3 and clear FD_CLOEXEC — otherwise the kernel closes
-# fd 3 at exec and bwrap reads a dead fd. The handles must stay in scope until
-# exec, or perl closes fd 3 from under bwrap. Done last so nothing else takes fd 3.
-my ($seccomp_fh, $seccomp_fd3);
-if ($use_seccomp) {
-    open($seccomp_fh, '<', $seccomp_blob)
-        or fail("cannot open seccomp blob $seccomp_blob: $!");
-    POSIX::dup2(fileno($seccomp_fh), 3) == 3
-        or fail("cannot place seccomp blob on fd 3: $!");
-    open($seccomp_fd3, '<&=', 3)
-        or fail("cannot reopen fd 3: $!");
-    my $flags = fcntl($seccomp_fd3, F_GETFD, 0);
-    fcntl($seccomp_fd3, F_SETFD, $flags & ~FD_CLOEXEC)
-        or fail("cannot clear close-on-exec on fd 3: $!");
+unless ($net_filter) {
+    # Unfiltered path: dup the seccomp blob onto fd 3 for `--seccomp 3` and exec
+    # bwrap directly. Perl opens fds close-on-exec, so we clear FD_CLOEXEC —
+    # otherwise the kernel closes fd 3 at exec and bwrap reads a dead fd. The
+    # handle must stay in scope until exec. Done last so nothing else takes fd 3.
+    my ($seccomp_fh, $seccomp_fd3);
+    if ($use_seccomp) {
+        open($seccomp_fh, '<', $seccomp_blob)
+            or fail("cannot open seccomp blob $seccomp_blob: $!");
+        POSIX::dup2(fileno($seccomp_fh), 3) == 3
+            or fail("cannot place seccomp blob on fd 3: $!");
+        open($seccomp_fd3, '<&=', 3)
+            or fail("cannot reopen fd 3: $!");
+        my $flags = fcntl($seccomp_fd3, F_GETFD, 0);
+        fcntl($seccomp_fd3, F_SETFD, $flags & ~FD_CLOEXEC)
+            or fail("cannot clear close-on-exec on fd 3: $!");
+    }
+    exec { 'bwrap' } 'bwrap', @args
+        or fail("exec bwrap: $!");
 }
 
-exec { 'bwrap' } 'bwrap', @args
-    or fail("exec bwrap: $!");
+# Filtered path. aye-buddy becomes a small supervisor: it starts the proxy on
+# the host, launches the sandbox under pasta, waits, then always kills the
+# proxy. Under pasta the chain is pasta -> aye-net-helper -> bwrap -> claude;
+# aye-net-helper drops the netns default route, rewrites @@AYE_PROXY@@ to the
+# proxy URL, and reopens the seccomp blob on fd 3 (pasta need not preserve fds).
+
+# 1. Start aye-proxy; read the ephemeral port it binds from its stdout. The
+#    allowlist is passed via the environment so it isn't exposed in `ps`.
+pipe(my $proxy_rd, my $proxy_wr) or fail("pipe: $!");
+my $proxy_pid = fork // fail("fork proxy: $!");
+if ($proxy_pid == 0) {
+    close $proxy_rd;
+    open(STDOUT, '>&', $proxy_wr) or POSIX::_exit(127);
+    $ENV{AYE_PROXY_ALLOW} = join("\n", @allow_hosts);
+    exec { $^X } $^X, $proxy_helper, '--addr', '127.0.0.1', '--port', '0'
+        or POSIX::_exit(127);
+}
+close $proxy_wr;
+my $port_line = readline($proxy_rd);
+close $proxy_rd;
+my ($proxy_port) = ($port_line // '') =~ /port=(\d+)/;
+unless ($proxy_port) {
+    kill 'TERM', $proxy_pid;
+    fail("aye-proxy did not report a listening port");
+}
+
+# 2. Run the sandbox under pasta. '-' when seccomp is off tells the helper not
+#    to set up fd 3.
+my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
+my @launch = ('pasta', '--config-net', '--',
+              $^X, $net_helper, $proxy_port, $blob_arg, '--',
+              'bwrap', @args);
+my $sandbox_pid = fork // fail("fork sandbox: $!");
+if ($sandbox_pid == 0) {
+    exec { $launch[0] } @launch
+        or POSIX::_exit(127);
+}
+
+# 3. Supervise: forward terminating signals to the sandbox, wait for it, then
+#    tear the proxy down and propagate the exit status.
+$SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
+waitpid($sandbox_pid, 0);
+my $status = $?;
+kill 'TERM', $proxy_pid;
+waitpid($proxy_pid, 0);
+exit($status & 127 ? 128 + ($status & 127) : $status >> 8);

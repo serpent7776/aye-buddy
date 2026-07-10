@@ -28,13 +28,17 @@ printf 'installed %s -> %s\n' "$SCRIPT" "$BINDIR/$SCRIPT"
 # Companion files for the defense-in-depth layers (see TODO.md). aye-buddy
 # looks for these next to itself: ll-helper drives the Landlock ruleset,
 # filter.bpf is the precompiled seccomp denylist, filter-nested.bpf its relaxed
-# --allow-bwrap variant. All optional at runtime — aye-buddy warns and degrades
-# if one is missing — so a missing blob (needs `make seccomp`, which wants
-# libseccomp) is only a warning here, not a failure.
-for f in ll-helper filter.bpf filter-nested.bpf; do
+# --allow-bwrap variant, aye-proxy is the filtering egress proxy and
+# aye-net-helper restricts the netns route (both for --net-filter). The blobs
+# are optional at runtime — aye-buddy warns and degrades if one is missing — so
+# a missing blob (needs `make seccomp`, which wants libseccomp) is only a
+# warning here, not a failure.
+for f in ll-helper aye-proxy aye-net-helper filter.bpf filter-nested.bpf; do
     if [ -f "$SRC_DIR/$f" ]; then
-        mode=0644
-        [ "$f" = ll-helper ] && mode=0755
+        case "$f" in
+            *.bpf) mode=0644 ;;
+            *)     mode=0755 ;;
+        esac
         install -m "$mode" "$SRC_DIR/$f" "$BINDIR/$f"
         printf 'installed %s -> %s\n' "$f" "$BINDIR/$f"
     else

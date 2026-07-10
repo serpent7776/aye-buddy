@@ -44,8 +44,11 @@ sub run_aye {
     make_path("$root/repo/.git") unless $opts->{no_repo};
     make_path("$root/repo");
 
-    # Stub bwrap dumps its argv; stub claude is only reached if bwrap were real.
+    # Stub bwrap/pasta dump their argv; stub claude is only reached if real.
+    # With egress filtering on (the default) aye-buddy execs pasta, whose argv
+    # nests the whole bwrap command; with --no-net-filter it execs bwrap.
     _stub("$root/bin/bwrap", 'print "$_\n" for @ARGV; exit 0;');
+    _stub("$root/bin/pasta", 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/claude", 'exit 0;');
 
     my $outf = "$root/out";
