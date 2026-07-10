@@ -240,10 +240,12 @@ holds — no route to the wider internet survived — and refuses to launch if
 it can't prove that, rather than run a session that looks filtered but
 isn't. `pasta` must be the parent of `bwrap` because it needs
 `sethostname`/namespace syscalls that `bwrap`'s seccomp denies — so it runs
-before the filter is installed. `pasta` runs `--ipv4-only`: the proxy and
-the route tightening are IPv4-only, so a live IPv6 route in the namespace
-would be an unfiltered path around the proxy — IPv6 is disabled at the
-source instead.
+before the filter is installed. The proxy and the route tightening are
+IPv4, so `aye-net-helper` also drops the netns IPv6 default route (a no-op
+on IPv4-only hosts): otherwise a live IPv6 route would be an unfiltered
+path around the proxy. (`pasta --ipv4-only` would do the same at the
+source, but it broke pasta's netns setup on some hosts, so the seal is done
+at the routes instead.)
 
 Because `pasta` maps the gateway address to the host's loopback for every
 port, a route to the gateway alone would also expose any `127.0.0.1`

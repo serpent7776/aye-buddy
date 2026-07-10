@@ -5,8 +5,9 @@
 # that userns, with CAP_NET_ADMIN over the netns) BEFORE bwrap. It:
 #   1. restricts routing so only the pasta gateway (where the host, and thus
 #      aye-proxy, is mapped) is reachable — the wider internet AND the local
-#      subnet lose their route, so a raw-socket reverse shell / LAN pivot can't
-#      connect. Then it probes the proxy: if the tightening broke reachability
+#      subnet lose their route (IPv4 and the IPv6 default too), so a raw-socket
+#      reverse shell / LAN pivot can't connect. Then it probes the proxy: if the
+#      tightening broke reachability
 #      it restores just the on-link subnet route (the proxy is reachable again,
 #      the internet still has no route). --allow-subnet skips tightening
 #      outright. Finally it VERIFIES the seal actually holds — no route to the
@@ -55,6 +56,14 @@ my @link = grep { /\S/ } split /\n/, qx(ip -4 route show scope link dev $ifc 2>/
 for (1 .. 8) {
     last unless qx(ip -4 route show default 2>/dev/null) =~ /\S/;
     system('ip', 'route', 'del', 'default');
+}
+
+# Same for IPv6: pasta is dual-stack by default, and the proxy is IPv4-only, so
+# a surviving v6 default route would be an unfiltered path around it. Drop it too
+# (a no-op on IPv4-only hosts; link-local stays, only the egress path goes).
+for (1 .. 8) {
+    last unless qx(ip -6 route show default 2>/dev/null) =~ /\S/;
+    system('ip', '-6', 'route', 'del', 'default');
 }
 
 # Tighten to a single gateway host-route unless the caller opted out: remove the
@@ -107,15 +116,19 @@ sub gateway_reachable {
     return 1;
 }
 
-# The seal holds iff (a) no default route remains — the only path a raw socket
-# has to an arbitrary internet host, since we never add a specific public route
-# — and (b) the kernel has no concrete route to a documentation address (RFC
-# 5737 TEST-NET-3, reserved so it can never collide with a real subnet, even
-# under --allow-subnet). Any surviving route to it means egress is open.
+# The seal holds iff, for BOTH IPv4 and IPv6, (a) no default route remains — the
+# only path a raw socket has to an arbitrary internet host, since we never add a
+# specific public route — and (b) the kernel has no concrete route to a
+# documentation address (RFC 5737 TEST-NET-3 / RFC 3849 2001:db8::/32, reserved
+# so they can never collide with a real subnet, even under --allow-subnet). Any
+# surviving route to one means egress is open.
 sub egress_sealed {
-    return 0 if qx(ip -4 route show default 2>/dev/null) =~ /\S/;
-    my $r = qx(ip -4 route get 203.0.113.1 2>&1);
-    return 0 if $? == 0 && $r =~ /\bdev\b/;
+    for my $p (['-4', '203.0.113.1'], ['-6', '2001:db8::1']) {
+        my ($fam, $probe) = @$p;
+        return 0 if qx(ip $fam route show default 2>/dev/null) =~ /\S/;
+        my $r = qx(ip $fam route get $probe 2>&1);
+        return 0 if $? == 0 && $r =~ /\bdev\b/;
+    }
     return 1;
 }
 
