@@ -105,7 +105,10 @@ aye-buddy --bind-ro /data/refs --bind ~/scratch -p "compare against the refs"
 Paths are resolved relative to the current directory and added to the
 Landlock ruleset, so they work the same with or without `--allow-bwrap`.
 `aye-buddy`'s own flags must come before any arguments meant for
-`claude`.
+`claude`; an optional `--` separator ends `aye-buddy`'s flags explicitly,
+so anything after it (even a literal `--allow-bwrap`) is passed straight
+to `claude`. A misplaced `aye-buddy` flag after the claude arguments is
+an error rather than being silently forwarded.
 
 ### `--allow-bwrap` (nested sandboxing)
 

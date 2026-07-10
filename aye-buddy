@@ -26,7 +26,9 @@ for my $cmd (qw(bwrap claude)) {
     on_path($cmd) or fail("required command not found on PATH: $cmd");
 }
 
-# Pull aye-buddy's own options off the front of @ARGV; the rest forwards to claude.
+# Pull aye-buddy's own options off the front of @ARGV; the rest forwards to
+# claude. Ours must lead: parsing stops at the first non-option, or at a `--`
+# separator (consumed, so a literal `--allow-bwrap` etc. can still reach claude).
 #   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing).
 #     Opt-in: it widens the syscall surface (mount/namespace calls) and forces
 #     Landlock off, so the bwrap mount-namespace allowlist becomes the only outer
@@ -35,9 +37,14 @@ for my $cmd (qw(bwrap claude)) {
 #     sandbox (rw/ro). Repeatable. Resolved here so claude never sees them.
 my $allow_bwrap = 0;
 my (@extra_rw, @extra_ro);
+my $saw_sep = 0;
 while (@ARGV) {
     my $arg = $ARGV[0];
-    if ($arg eq '--allow-bwrap') {
+    if ($arg eq '--') {
+        shift @ARGV;
+        $saw_sep = 1;
+        last;
+    } elsif ($arg eq '--allow-bwrap') {
         $allow_bwrap = 1;
         shift @ARGV;
     } elsif ($arg eq '--bind' || $arg eq '--bind-ro') {
@@ -49,6 +56,15 @@ while (@ARGV) {
         push @{ $arg eq '--bind' ? \@extra_rw : \@extra_ro }, $abs;
     } else {
         last;
+    }
+}
+# Without an explicit `--`, an aye-buddy flag among the leftover claude args is a
+# misplaced flag, not a claude one: fail loudly rather than forward it silently.
+if (!$saw_sep) {
+    for my $arg (@ARGV) {
+        next unless $arg eq '--allow-bwrap' || $arg eq '--bind' || $arg eq '--bind-ro';
+        fail("$arg is an aye-buddy flag but came after claude's arguments;\n" .
+             "  move it before them, or use `--` to force it through to claude.");
     }
 }
 
