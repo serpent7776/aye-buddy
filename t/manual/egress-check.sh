@@ -7,11 +7,13 @@
 # pasta's netns) — WITHOUT bwrap, so a failure points at the plumbing, not the
 # file sandbox.
 #
-# It proves the property the whole feature rests on:
-#   1. an allowlisted host is reachable *through the proxy*
-#   2. a non-allowlisted host is refused (403) by the proxy
-#   3. anything NOT going through the proxy has no route out — i.e. a raw-socket
-#      reverse shell to an off-subnet IP cannot connect
+# Two modes are exercised:
+#   default (tight)   — only the proxy is reachable; internet AND same-subnet
+#                       (LAN) hosts have no route.
+#   --allow-subnet    — the fallback: internet still blocked, but same-subnet
+#                       hosts stay reachable.
+# In both, an allowlisted host must reach the proxy, a non-allowlisted host must
+# get a 403, and raw off-subnet egress (reverse-shell path) must be blocked.
 #
 # Usage:  t/manual/egress-check.sh
 # Needs:  pasta, curl, ip, timeout, and aye-proxy + aye-net-helper in the repo.
@@ -30,7 +32,7 @@ command -v curl   >/dev/null || { echo "SKIP: curl not installed";  exit 2; }
 [ -x "$proxy_bin" ]          || { echo "SKIP: $proxy_bin not found"; exit 2; }
 [ -f "$net_helper" ]         || { echo "SKIP: $net_helper not found"; exit 2; }
 
-# 1. Start aye-proxy on the host (it has real network; the netns will not).
+# Start aye-proxy on the host (it has real network; the netns will not).
 proxy_out=$(mktemp)
 "$proxy_bin" --allow "$ALLOWED_HOST" --port 0 >"$proxy_out" 2>"$proxy_out.err" &
 proxy_pid=$!
@@ -41,61 +43,61 @@ PROXY_PORT=$(sed -n 's/^port=//p' "$proxy_out")
 [ -n "$PROXY_PORT" ] || { echo "FAIL: proxy did not report a port"; cat "$proxy_out.err"; exit 1; }
 echo "proxy listening on 127.0.0.1:$PROXY_PORT (allow: $ALLOWED_HOST)"
 
-# 2. The assertions, run inside the namespace. aye-net-helper (spawned by pasta,
-#    below) has already dropped the default route and exported HTTP(S)_PROXY, so
-#    here we just probe. Vars are inherited through pasta -> helper -> bash.
+# Assertions run inside the namespace. aye-net-helper (spawned by pasta) has
+# already restricted the route and exported HTTP(S)_PROXY; here we just probe.
+# EXPECT_LAN ("blocked"/"reachable") is the mode-specific expectation for a
+# same-subnet host. Vars flow through pasta -> helper -> bash.
 export ALLOWED_HOST DENIED_HOST BLOCKHOLE_IP
 inner='
 set -u
-echo "--- ns routes (default dropped by aye-net-helper) ---"; ip -4 route show
 P="$HTTP_PROXY"
+gw=$(printf "%s" "$P" | sed -E "s#^http://([^:]+):.*#\1#")
+lan=$(printf "%s" "$gw" | sed -E "s#\.[0-9]+$#.254#")   # same /24, a different host
+echo "--- ns routes ---"; ip -4 route show
 rc=0
 
-# (1) allowlisted host, through the proxy → a real HTTP status
 code=$(timeout 15 curl -sS -o /dev/null -w "%{http_code}" -x "$P" "https://$ALLOWED_HOST/" 2>/dev/null || echo 000)
 if [ "$code" -ge 200 ] && [ "$code" -lt 500 ] && [ "$code" != 403 ]; then
     echo "PASS  allowlisted $ALLOWED_HOST reachable via proxy (HTTP $code)"
-else
-    echo "FAIL  allowlisted $ALLOWED_HOST via proxy got HTTP $code"; rc=1
-fi
+else echo "FAIL  allowlisted $ALLOWED_HOST via proxy got HTTP $code"; rc=1; fi
 
-# (2) non-allowlisted host → expect 403 from the proxy. Read %{http_connect}
-# (the CONNECT response), NOT %{http_code} (000 when the tunnel is refused).
-code=$(timeout 15 curl -sS -o /dev/null -w "%{http_connect}" -x "$P" "https://$DENIED_HOST/" 2>/dev/null)
-code=${code:-000}
-if [ "$code" = 403 ]; then
-    echo "PASS  non-allowlisted $DENIED_HOST refused by proxy (403)"
-else
-    echo "FAIL  non-allowlisted $DENIED_HOST via proxy got CONNECT $code (want 403)"; rc=1
-fi
+code=$(timeout 15 curl -sS -o /dev/null -w "%{http_connect}" -x "$P" "https://$DENIED_HOST/" 2>/dev/null); code=${code:-000}
+if [ "$code" = 403 ]; then echo "PASS  non-allowlisted $DENIED_HOST refused (403)"
+else echo "FAIL  non-allowlisted $DENIED_HOST got CONNECT $code (want 403)"; rc=1; fi
 
-# (3) raw egress bypassing the proxy → must have NO route (reverse-shell path)
 if timeout 6 curl -sS --noproxy "*" -o /dev/null "https://$BLOCKHOLE_IP/" 2>/dev/null; then
     echo "FAIL  raw egress to $BLOCKHOLE_IP succeeded — reverse shell would work"; rc=1
-else
-    echo "PASS  raw egress to $BLOCKHOLE_IP blocked (no route)"
-fi
+else echo "PASS  raw egress to $BLOCKHOLE_IP blocked (no route)"; fi
 
-# (4) bash /dev/tcp reverse-shell primitive → must fail
 if timeout 6 bash -c "exec 3<>/dev/tcp/$BLOCKHOLE_IP/443" 2>/dev/null; then
-    echo "FAIL  /dev/tcp to $BLOCKHOLE_IP:443 connected — reverse shell would work"; rc=1
-else
-    echo "PASS  /dev/tcp reverse-shell primitive blocked"
-fi
+    echo "FAIL  /dev/tcp to $BLOCKHOLE_IP:443 connected"; rc=1
+else echo "PASS  /dev/tcp reverse-shell primitive blocked"; fi
+
+# Same-subnet host: does the kernel have a route to it?
+if ip -4 route get "$lan" >/dev/null 2>&1; then lan_state=reachable; else lan_state=blocked; fi
+if [ "$lan_state" = "$EXPECT_LAN" ]; then
+    echo "PASS  same-subnet $lan is $lan_state (expected for this mode)"
+else echo "FAIL  same-subnet $lan is $lan_state, expected $EXPECT_LAN"; rc=1; fi
 
 exit $rc
 '
 
-echo "entering namespace via pasta -> aye-net-helper ..."
-# "-" = no seccomp blob (no bwrap in this harness); the helper drops the route
-# and exports the proxy env, then execs our probe.
-pasta --config-net -- "$net_helper" "$PROXY_PORT" - -- bash -c "$inner"
-status=$?
+status=0
+
+echo; echo "=== mode: tight (default) — only the proxy is reachable ==="
+EXPECT_LAN=blocked pasta --config-net -- \
+    "$net_helper" "$PROXY_PORT" - -- bash -c "$inner" || status=1
+
+echo; echo "=== mode: --allow-subnet — LAN stays reachable (fallback) ==="
+EXPECT_LAN=reachable pasta --config-net -- \
+    "$net_helper" "$PROXY_PORT" - --allow-subnet -- bash -c "$inner" || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
-    echo "RESULT: egress mechanism verified — proxy is the sole exit, raw egress blocked."
+    echo "RESULT: egress mechanism verified — tight mode blocks the LAN, --allow-subnet keeps it."
 else
-    echo "RESULT: FAILED (exit $status) — do not wire this into aye-buddy yet."
+    echo "RESULT: FAILED (exit $status). If only the tight-mode LAN check failed, aye-net-helper"
+    echo "        may have auto-reverted (look for its warning above) — the /32 gateway route"
+    echo "        did not hold on this host; --allow-subnet is the fallback."
 fi
 exit "$status"

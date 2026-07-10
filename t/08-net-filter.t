@@ -34,6 +34,25 @@ subtest '--no-net-filter: exec bwrap directly and share the host network' => sub
     ok !has($r, '--uid'), 'no uid override (bwrap maps the real uid directly)';
 };
 
+subtest 'routing tightens by default; --allow-subnet opts out' => sub {
+    my $tight = run_aye();
+    ok !has($tight, '--allow-subnet'),
+        'default launch does not pass --allow-subnet to the helper';
+
+    my $loose = run_aye('--allow-subnet');
+    is $loose->{exit}, 0, 'exits 0';
+    ok has($loose, '--allow-subnet'),
+        '--allow-subnet is forwarded to aye-net-helper';
+    # and it stays an aye-buddy flag, not a claude one
+    my @after_claude = do {
+        my @a = @{$loose->{argv}};
+        my ($ci) = grep { $a[$_] eq 'claude' } 0 .. $#a;
+        defined $ci ? @a[$ci .. $#a] : ();
+    };
+    ok !(grep { $_ eq '--allow-subnet' } @after_claude),
+        '--allow-subnet does not leak into the claude payload';
+};
+
 subtest '--no-net-filter after claude args is a misplaced-flag error' => sub {
     my $r = run_aye('-p', 'hi', '--no-net-filter');
     is $r->{exit}, 1;

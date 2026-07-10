@@ -3,39 +3,77 @@
 #
 # pasta spawns this inside the fresh user+net namespace (so it runs as root in
 # that userns, with CAP_NET_ADMIN over the netns) BEFORE bwrap. It:
-#   1. drops the default route pasta installed, so the wider internet has no
-#      path out — a raw-socket reverse shell cannot connect anywhere. The
-#      pasta gateway stays reachable (it is where the host, and thus aye-proxy,
-#      is mapped), so allowlisted HTTPS still flows through the proxy.
+#   1. restricts routing so only the pasta gateway (where the host, and thus
+#      aye-proxy, is mapped) is reachable — the wider internet AND the local
+#      subnet lose their route, so a raw-socket reverse shell / LAN pivot can't
+#      connect. Then it probes the proxy: if the tightening broke reachability
+#      it reverts to the looser default-route-only routing (subnet reachable)
+#      so the session still works. --allow-subnet skips tightening outright.
 #   2. rewrites @@AYE_PROXY@@ in the target argv to the proxy URL and exports
 #      HTTP(S)_PROXY, so both bwrap's --setenv values and plain clients pick it
 #      up.
 #   3. reopens the seccomp blob on fd 3 for `bwrap --seccomp 3` — pasta need
 #      not preserve inherited fds across exec, so we own that fd here.
 # then execs the target (bwrap, or in the test harness a probe command).
-#
-# NOTE: only the default route is dropped, so hosts on the same subnet as the
-# pasta gateway remain reachable (a LAN-scoped residual). Tightening that to a
-# single gateway host-route needs its own verification and is left as a TODO.
 use strict;
 use warnings;
 use POSIX ();
 use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
+use IO::Socket::INET ();
 
 sub die_h { print STDERR "aye-net-helper: $_[0]\n"; exit 1 }
+sub warn_h { print STDERR "aye-net-helper: $_[0]\n" }
 
-# argv: PROXY_PORT  SECCOMP(-|path)  --  CMD [ARG...]
-my $port    = shift // die_h('usage: aye-net-helper PORT SECCOMP -- CMD...');
+# argv: PROXY_PORT  SECCOMP(-|path)  [--allow-subnet]  --  CMD [ARG...]
+my $port    = shift // die_h('usage: aye-net-helper PORT SECCOMP [--allow-subnet] -- CMD...');
 my $seccomp = shift // die_h('missing SECCOMP argument (path or -)');
+my $allow_subnet = 0;
+if (@ARGV && $ARGV[0] eq '--allow-subnet') { $allow_subnet = 1; shift }
 my $sep     = shift // '';
 $sep eq '--' or die_h('expected -- separator before the command');
 my @cmd = @ARGV;
 @cmd or die_h('no command to exec');
 
-# Discover the gateway pasta configured, then remove the default route.
-my ($gwaddr) = (qx(ip -4 route show default 2>/dev/null) =~ /default via (\S+)/);
-$gwaddr or die_h('no default route present (is pasta --config-net active?)');
-system('ip', 'route', 'del', 'default');    # best-effort; gateway stays on-link
+# Discover the gateway and interface pasta configured.
+my $default = qx(ip -4 route show default 2>/dev/null);
+my ($gwaddr, $ifc) = $default =~ /default via (\S+) dev (\S+)/;
+$gwaddr && $ifc or die_h('no default route present (is pasta --config-net active?)');
+
+# Save the on-link (subnet) routes before touching anything, so we can restore
+# the looser routing if the tightening turns out to break reachability.
+my @link = grep { /\S/ } split /\n/, qx(ip -4 route show scope link dev $ifc 2>/dev/null);
+
+# Drop the default route: the wider internet now has no path out.
+system('ip', 'route', 'del', 'default');
+
+# Tighten to a single gateway host-route unless the caller opted out: remove the
+# auto on-link subnet route too, leaving ONLY the gateway (= proxy) reachable, so
+# same-subnet LAN hosts lose their route as well. Then verify the proxy is still
+# reachable; if pasta needs the on-link route to answer for the gateway, revert.
+unless ($allow_subnet) {
+    system('ip', 'route', 'replace', "$gwaddr/32", 'dev', $ifc);
+    for my $r (@link) {
+        my ($pfx) = split ' ', $r;
+        system('ip', 'route', 'del', $pfx, 'dev', $ifc)
+            if $pfx && $pfx ne "$gwaddr/32";
+    }
+    unless (gateway_reachable($gwaddr, $port)) {
+        warn_h("gateway unreachable after tightening; reverting to subnet-reachable routing");
+        system('ip', 'route', 'replace', (split ' ', $_)[0], 'dev', $ifc) for @link;
+        system('ip', 'route', 'replace', 'default', 'via', $gwaddr, 'dev', $ifc);
+    }
+}
+
+# TCP-connect probe to the proxy: a plain reachability check (aye-proxy accepts
+# the connection and we drop it without a CONNECT).
+sub gateway_reachable {
+    my ($host, $p) = @_;
+    my $s = IO::Socket::INET->new(PeerHost => $host, PeerPort => $p,
+        Proto => 'tcp', Timeout => 3);
+    return 0 unless $s;
+    close $s;
+    return 1;
+}
 
 # Point clients at the proxy (reached via the gateway, which pasta maps to the
 # host where aye-proxy listens).

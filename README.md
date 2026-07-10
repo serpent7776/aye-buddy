@@ -230,10 +230,18 @@ in the second bucket and simply cannot connect.
 How it fits together: aye-buddy starts `aye-proxy` on the host, then
 launches the sandbox under `pasta` (`pasta → aye-net-helper → bwrap →
 claude`). `pasta` gives the namespace a userspace uplink; `aye-net-helper`
-drops the default route so only the proxy (reached via the pasta gateway)
-remains, and points `HTTP(S)_PROXY` at it. `pasta` must be the parent of
-`bwrap` because it needs `sethostname`/namespace syscalls that `bwrap`'s
-seccomp denies — so it runs before the filter is installed.
+tightens the netns route to a single host route to the gateway — so only
+the proxy is reachable, and both the wider internet and same-subnet (LAN)
+hosts lose their route — then points `HTTP(S)_PROXY` at it. After
+tightening it probes the proxy and, if reachability broke, reverts to the
+looser default-route-only routing so the session still works. `pasta`
+must be the parent of `bwrap` because it needs `sethostname`/namespace
+syscalls that `bwrap`'s seccomp denies — so it runs before the filter is
+installed.
+
+`--allow-subnet` keeps same-subnet hosts reachable (see the residual note
+below) — the escape hatch for a workload that needs a LAN host, or a setup
+where the tighter routing is a problem.
 
 The builtin allowlist covers the Claude API and telemetry, the major
 package registries (npm, PyPI, crates.io, Go), and git over HTTPS. Add
@@ -261,9 +269,13 @@ risks:**
 - **No TLS interception.** The proxy allows a `CONNECT` by its hostname
   without terminating TLS, so SNI spoofing / domain fronting can reach an
   off-list host that shares infrastructure with an allowed one.
-- **Same-subnet hosts stay reachable.** Only the default route is dropped,
-  so a host on the same LAN subnet as the pasta gateway still has a route.
-  Tightening this to a single gateway host-route is a TODO.
+- **Same-subnet hosts — tightened, but check your mode.** By default the
+  route is pinned to the gateway only, so LAN hosts have no route either.
+  Two caveats: `--allow-subnet` deliberately re-opens the subnet, and if
+  the tight routing can't reach the proxy on your setup, `aye-net-helper`
+  auto-reverts to the looser routing (LAN reachable) and warns — so under
+  those conditions the LAN residual is back. `t/manual/egress-check.sh`
+  verifies which mode actually took effect.
 - **SSH git needs a hole.** SSH remotes don't traverse an HTTP proxy;
   prefer HTTPS remotes, or allowlist the git host — a raw-TCP lane for
   `HOST:22` is not wired yet (`--allow-host` currently feeds the HTTPS

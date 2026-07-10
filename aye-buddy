@@ -43,15 +43,20 @@ for my $cmd (qw(bwrap claude)) {
 #   --net-filter / --no-net-filter toggles the egress filter (default on). When
 #     on, the session reaches the network only through the bundled proxy, so a
 #     reverse shell has no route out; --no-net-filter falls back to --share-net.
+#   --allow-subnet keeps same-subnet (LAN) hosts reachable under the filter.
+#     Default routing tightens to the proxy only; this is the escape hatch for
+#     workloads that need a LAN host, or setups where tightening is too strict.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
-my $allow_bwrap = 0;
-my $net_filter  = 1;
+my $allow_bwrap  = 0;
+my $net_filter   = 1;
+my $allow_subnet = 0;
 my (@extra_rw, @extra_ro, @extra_hosts);
-GetOptions('allow-bwrap' => \$allow_bwrap,
-           'net-filter!'  => \$net_filter,
-           'bind:s'       => \@extra_rw,
-           'bind-ro:s'    => \@extra_ro,
-           'allow-host:s' => \@extra_hosts)
+GetOptions('allow-bwrap'  => \$allow_bwrap,
+           'net-filter!'   => \$net_filter,
+           'allow-subnet'  => \$allow_subnet,
+           'bind:s'        => \@extra_rw,
+           'bind-ro:s'     => \@extra_ro,
+           'allow-host:s'  => \@extra_hosts)
     or fail("invalid aye-buddy option");
 # pass_through leaves a leading `--` in place; consume it as our separator so a
 # literal `--allow-bwrap` etc. can still reach claude untouched.
@@ -62,7 +67,8 @@ if (!$saw_sep) {
     for my $arg (@ARGV) {
         next unless $arg eq '--allow-bwrap' || $arg eq '--bind'
                  || $arg eq '--bind-ro'     || $arg eq '--allow-host'
-                 || $arg eq '--net-filter'  || $arg eq '--no-net-filter';
+                 || $arg eq '--net-filter'  || $arg eq '--no-net-filter'
+                 || $arg eq '--allow-subnet';
         fail("$arg is an aye-buddy flag but came after claude's arguments;\n" .
              "  move it before them, or use `--` to force it through to claude.");
     }
@@ -430,7 +436,8 @@ unless ($proxy_port) {
 #    to set up fd 3.
 my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
 my @launch = ('pasta', '--config-net', '--',
-              $^X, $net_helper, $proxy_port, $blob_arg, '--',
+              $^X, $net_helper, $proxy_port, $blob_arg,
+              ($allow_subnet ? '--allow-subnet' : ()), '--',
               'bwrap', @args);
 my $sandbox_pid = fork // fail("fork sandbox: $!");
 if ($sandbox_pid == 0) {
