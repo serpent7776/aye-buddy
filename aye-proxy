@@ -14,11 +14,25 @@
 # HOST or HOST:PORT; a port-less entry permits 80/443, a HOST:PORT entry permits
 # exactly that port. Host match is exact or a dot-suffix (foo.example matches
 # example). Everything else gets 403.
+#
+# The client is an untrusted sandbox, so resource use is bounded: at most
+# AYE_PROXY_MAX_CONNS concurrent tunnels (default 256; excess get 503), plus
+# connect/header/idle timeouts so a stalled peer can't pin a slot indefinitely.
 use strict;
 use warnings;
 use IO::Socket::INET;
 use IO::Select;
 use Getopt::Long qw(GetOptions);
+use POSIX qw(WNOHANG);
+use Errno qw(EINTR);
+
+# Resource-bound knobs (see header): a ceiling on concurrent tunnels, each a
+# forked process + fd pair, and timeouts so a stalled peer can't hold a slot.
+my $MAX_CONNS = ($ENV{AYE_PROXY_MAX_CONNS} // '') =~ /\A[0-9]+\z/
+    ? $ENV{AYE_PROXY_MAX_CONNS} + 0 : 256;
+my $CONNECT_TIMEOUT = 10;      # origin connect
+my $HEADER_TIMEOUT  = 30;      # client must send its CONNECT promptly
+my $IDLE_TIMEOUT    = 1800;    # reap a tunnel idle in both directions
 
 my (@allow, $port, $addr);
 $port = 0;
@@ -50,8 +64,15 @@ sub connect_allowed {
     return 0;
 }
 
-$SIG{CHLD} = 'IGNORE';    # auto-reap the per-connection children
 $| = 1;
+
+# Reap children as they exit and keep a live count for the cap below. (A plain
+# SIG_IGN would auto-reap but leave nothing to count, so the cap couldn't tell
+# how many tunnels are open.)
+my %kids;
+$SIG{CHLD} = sub {
+    while ((my $pid = waitpid(-1, WNOHANG)) > 0) { delete $kids{$pid} }
+};
 
 my $srv = IO::Socket::INET->new(
     Listen    => 128,
@@ -63,9 +84,19 @@ my $srv = IO::Socket::INET->new(
 # Announce the bound port so the launcher can point the netns at it.
 print "port=", $srv->sockport, "\n";
 
-while (my $client = $srv->accept) {
+while (1) {
+    my $client = $srv->accept;
+    unless ($client) {
+        next if $! == EINTR;    # SIGCHLD interrupted accept; just retry
+        last;                   # a real listen-socket error: stop
+    }
+    # Shed load past the cap rather than fork an unbounded number of processes.
+    if (keys %kids >= $MAX_CONNS) {
+        reply($client, 503, 'Service Unavailable');
+        next;
+    }
     my $pid = fork;
-    next if $pid;             # parent: keep accepting
+    if ($pid)          { $kids{$pid} = 1; next }    # parent: keep accepting
     if (!defined $pid) { warn "aye-proxy: fork: $!\n"; close $client; next }
     close $srv;               # child: handle one connection
     handle($client);
@@ -76,9 +107,13 @@ sub handle {
     my ($client) = @_;
     $client->autoflush(1);
 
-    # Read the request line + headers (until the blank line).
+    # Read the request line + headers (until the blank line). Bounded by a read
+    # timeout so a client that connects and dribbles (or never sends) can't pin
+    # the child forever — the slowloris case.
+    my $csel = IO::Select->new($client);
     my $head = '';
     while ($head !~ /\r?\n\r?\n/) {
+        return reply($client, 408, 'Request Timeout') unless $csel->can_read($HEADER_TIMEOUT);
         my $n = sysread($client, my $buf, 4096);
         last unless $n;
         $head .= $buf;
@@ -100,6 +135,7 @@ sub handle {
 
     my $origin = IO::Socket::INET->new(
         PeerHost => $host, PeerPort => $dport, Proto => 'tcp',
+        Timeout => $CONNECT_TIMEOUT,
     );
     return reply($client, 502, 'Bad Gateway') unless $origin;
     $origin->autoflush(1);
@@ -115,11 +151,13 @@ sub reply {
     return;
 }
 
-# Bidirectional byte pump until either side closes.
+# Bidirectional byte pump until either side closes or the tunnel goes idle in
+# both directions past IDLE_TIMEOUT (reaps half-open tunnels whose peer vanished
+# without a FIN, which would otherwise sit forever).
 sub pump {
     my ($a, $b) = @_;
     my $sel = IO::Select->new($a, $b);
-    while (my @ready = $sel->can_read) {
+    while (my @ready = $sel->can_read($IDLE_TIMEOUT)) {
         for my $from (@ready) {
             my $to = $from == $a ? $b : $a;
             my $n = sysread($from, my $buf, 65536);
@@ -132,4 +170,5 @@ sub pump {
             }
         }
     }
+    close $a; close $b;    # can_read returned empty: idle timeout
 }

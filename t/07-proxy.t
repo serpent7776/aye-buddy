@@ -99,5 +99,23 @@ subtest 'non-CONNECT method is rejected' => sub {
     close $s;
 };
 
+subtest 'connection cap sheds load past the limit' => sub {
+    # Cap at one live tunnel; the second concurrent connection must be refused
+    # rather than fork an unbounded number of host processes.
+    local $ENV{AYE_PROXY_MAX_CONNS} = 1;
+    my $pport = start_proxy("127.0.0.1:$origin");
+
+    my ($s1, $st1) = connect_via($pport, "127.0.0.1:$origin");
+    like $st1, qr{^HTTP/1\.1 200 }, 'first tunnel established';
+    my $blank = <$s1>;                 # header terminator
+    is <$s1>, "HELLO\n", 'first tunnel is live (child holds a slot)';
+
+    my ($s2, $st2) = connect_via($pport, "127.0.0.1:$origin");
+    like $st2, qr{^HTTP/1\.1 503 }, 'second connection shed at the cap';
+
+    close $s2;
+    close $s1;
+};
+
 reap();
 done_testing;
