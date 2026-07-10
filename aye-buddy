@@ -410,8 +410,13 @@ unless ($net_filter) {
 #    proxy's diagnostics (blocked hosts) go to a log file, NOT the shared
 #    terminal — otherwise they'd scribble over claude's TUI. The log is removed
 #    on exit; AYE_BUDDY_DEBUG prints its path and keeps it for inspection.
-my $proxy_log = ($ENV{TMPDIR} // '/tmp') . "/aye-proxy.$$.log";
-warning("egress proxy log: $proxy_log") if $ENV{AYE_BUDDY_DEBUG};
+my $tmpdir    = $ENV{TMPDIR} // '/tmp';
+my $proxy_log = "$tmpdir/aye-proxy.$$.log";
+my $pasta_log = "$tmpdir/aye-pasta.$$.log";
+if ($ENV{AYE_BUDDY_DEBUG}) {
+    warning("egress proxy log: $proxy_log");
+    warning("pasta log: $pasta_log");
+}
 pipe(my $proxy_rd, my $proxy_wr) or fail("pipe: $!");
 my $proxy_pid = fork // fail("fork proxy: $!");
 if ($proxy_pid == 0) {
@@ -428,14 +433,16 @@ close $proxy_rd;
 my ($proxy_port) = ($port_line // '') =~ /port=(\d+)/;
 unless ($proxy_port) {
     kill 'TERM', $proxy_pid;
-    unlink $proxy_log unless $ENV{AYE_BUDDY_DEBUG};
+    unlink $proxy_log, $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
     fail("aye-proxy did not report a listening port");
 }
 
 # 2. Run the sandbox under pasta. '-' when seccomp is off tells the helper not
 #    to set up fd 3.
 my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
-my @launch = ('pasta', '--config-net', '--',
+# --quiet + log-to-file keep pasta's own diagnostics (the IPv6 "local mode"
+# notes and friends) off the shared terminal, where they'd clutter claude's TUI.
+my @launch = ('pasta', '--config-net', '--quiet', '--log-file', $pasta_log, '--',
               $^X, $net_helper, $proxy_port, $blob_arg,
               ($allow_subnet ? '--allow-subnet' : ()), '--',
               'bwrap', @args);
@@ -452,6 +459,6 @@ waitpid($sandbox_pid, 0);
 my $status = $?;
 kill 'TERM', $proxy_pid;
 waitpid($proxy_pid, 0);
-# Drop the proxy log on a clean exit; keep it under debug for inspection.
-unlink $proxy_log unless $ENV{AYE_BUDDY_DEBUG};
+# Drop the helper logs on a clean exit; keep them under debug for inspection.
+unlink $proxy_log, $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
 exit($status & 127 ? 128 + ($status & 127) : $status >> 8);

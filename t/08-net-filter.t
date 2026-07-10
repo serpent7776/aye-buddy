@@ -14,6 +14,7 @@ subtest 'default: sandbox runs under pasta with proxy env, no --share-net' => su
     my $r = run_aye();
     is $r->{exit}, 0, 'exits 0';
     ok has($r, '--config-net'), 'launched via pasta --config-net';
+    ok has($r, '--quiet'), 'pasta quieted so its notes stay off the TUI';
     ok has($r, 'bwrap'), 'bwrap nested in the launch chain';
     ok +(grep { m{aye-net-helper} } @{$r->{argv}}), 'aye-net-helper in the chain';
     ok has($r, '@@AYE_PROXY@@'), 'proxy URL placeholder is set for the helper';
