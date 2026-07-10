@@ -1,0 +1,135 @@
+#!/usr/bin/env perl
+# aye-proxy: minimal filtering HTTP CONNECT proxy for aye-buddy.
+#
+# It is the single egress point for the sandbox netns: the netns has no route
+# to the internet except this proxy, so every outbound TCP connection arrives
+# here as a CONNECT and is allowed only if its target host is on the allowlist.
+# A raw-socket reverse shell has no CONNECT verb and no route of its own, so it
+# cannot get out. TLS is tunnelled untouched (no interception), so the allow
+# decision is made from the client-supplied host — same trade-off as claude's
+# own sandbox proxy: cheap and transparent, but spoofable via SNI/domain-front.
+#
+# Allowlist entries come from --allow (repeatable) and the newline-separated
+# AYE_PROXY_ALLOW env (so the full list needn't show up in `ps`). Each entry is
+# HOST or HOST:PORT; a port-less entry permits 80/443, a HOST:PORT entry permits
+# exactly that port. Host match is exact or a dot-suffix (foo.example matches
+# example). Everything else gets 403.
+use strict;
+use warnings;
+use IO::Socket::INET;
+use IO::Select;
+use Getopt::Long qw(GetOptions);
+
+my (@allow, $port, $addr);
+$port = 0;
+$addr = '127.0.0.1';
+GetOptions('allow=s' => \@allow, 'port=i' => \$port, 'addr=s' => \$addr)
+    or die "aye-proxy: bad options\n";
+push @allow, grep { length } split /\n/, ($ENV{AYE_PROXY_ALLOW} // '');
+
+# Parse each entry once into [host, port|undef].
+my @entries;
+for my $e (@allow) {
+    my ($h, $p) = $e =~ /\A(.+?)(?::([0-9]+))?\z/;
+    push @entries, [ lc $h, defined $p ? $p + 0 : undef ];
+}
+
+sub host_match {
+    my ($h, $e) = @_;
+    return $h eq $e || $h =~ /\.\Q$e\E\z/;
+}
+
+sub connect_allowed {
+    my ($h, $p) = @_;
+    $h = lc $h;
+    for my $e (@entries) {
+        my ($eh, $ep) = @$e;
+        next unless host_match($h, $eh);
+        return 1 if defined $ep ? $p == $ep : ($p == 443 || $p == 80);
+    }
+    return 0;
+}
+
+$SIG{CHLD} = 'IGNORE';    # auto-reap the per-connection children
+$| = 1;
+
+my $srv = IO::Socket::INET->new(
+    Listen    => 128,
+    LocalAddr => $addr,
+    LocalPort => $port,
+    ReuseAddr => 1,
+    Proto     => 'tcp',
+) or die "aye-proxy: listen on $addr:$port: $!\n";
+# Announce the bound port so the launcher can point the netns at it.
+print "port=", $srv->sockport, "\n";
+
+while (my $client = $srv->accept) {
+    my $pid = fork;
+    next if $pid;             # parent: keep accepting
+    if (!defined $pid) { warn "aye-proxy: fork: $!\n"; close $client; next }
+    close $srv;               # child: handle one connection
+    handle($client);
+    exit 0;
+}
+
+sub handle {
+    my ($client) = @_;
+    $client->autoflush(1);
+
+    # Read the request line + headers (until the blank line).
+    my $head = '';
+    while ($head !~ /\r?\n\r?\n/) {
+        my $n = sysread($client, my $buf, 4096);
+        last unless $n;
+        $head .= $buf;
+        return reply($client, 400, 'Bad Request') if length $head > 65536;
+    }
+    my ($line) = split /\r?\n/, $head, 2;
+    $line //= '';
+
+    # CONNECT host:port HTTP/1.x — the only verb we serve. Plain-HTTP proxying
+    # is intentionally unsupported: the allowlisted hosts are all HTTPS, and
+    # deny-by-default is the safe posture.
+    my ($host, $dport) = $line =~ m{\ACONNECT\s+([^\s:]+):([0-9]+)\s}i;
+    return reply($client, 405, 'Method Not Allowed') unless defined $host;
+
+    unless (connect_allowed($host, $dport)) {
+        warn "aye-proxy: DENY $host:$dport\n";
+        return reply($client, 403, 'Blocked by allowlist');
+    }
+
+    my $origin = IO::Socket::INET->new(
+        PeerHost => $host, PeerPort => $dport, Proto => 'tcp',
+    );
+    return reply($client, 502, 'Bad Gateway') unless $origin;
+    $origin->autoflush(1);
+    print $client "HTTP/1.1 200 Connection established\r\n\r\n";
+
+    pump($client, $origin);
+}
+
+sub reply {
+    my ($client, $code, $msg) = @_;
+    print $client "HTTP/1.1 $code $msg\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    close $client;
+    return;
+}
+
+# Bidirectional byte pump until either side closes.
+sub pump {
+    my ($a, $b) = @_;
+    my $sel = IO::Select->new($a, $b);
+    while (my @ready = $sel->can_read) {
+        for my $from (@ready) {
+            my $to = $from == $a ? $b : $a;
+            my $n = sysread($from, my $buf, 65536);
+            if (!$n) { close $a; close $b; return }
+            my $off = 0;
+            while ($off < $n) {
+                my $w = syswrite($to, $buf, $n - $off, $off);
+                last unless $w;
+                $off += $w;
+            }
+        }
+    }
+}
