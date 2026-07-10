@@ -95,17 +95,19 @@ sessions.
 By default only the project root and a fixed set of `~/.claude` paths are
 reachable. Pass `--bind PATH` (read-write) or `--bind-ro PATH`
 (read-only) to expose an additional host path, mounted at the *same* path
-inside the sandbox. Both are `aye-buddy` flags — they're stripped before
-the rest of the arguments reach `claude` — and both are repeatable:
+inside the sandbox. The value may be attached with `=` (`--bind=PATH`).
+Both are `aye-buddy` flags — they're stripped before the rest of the
+arguments reach `claude` — and both are repeatable:
 
 ```
 aye-buddy --bind-ro /data/refs --bind ~/scratch -p "compare against the refs"
 ```
 
 Paths are resolved relative to the current directory and added to the
-Landlock ruleset, so they work the same with or without `--allow-bwrap`.
-`aye-buddy`'s own flags must come before any arguments meant for
-`claude`; an optional `--` separator ends `aye-buddy`'s flags explicitly,
+Landlock ruleset, so they work the same with or without `--allow-bwrap`;
+a missing or empty PATH is rejected rather than silently binding the
+current directory. `aye-buddy`'s own flags must come before any arguments
+meant for `claude`; an optional `--` separator ends `aye-buddy`'s flags explicitly,
 so anything after it (even a literal `--allow-bwrap`) is passed straight
 to `claude`. A misplaced `aye-buddy` flag after the claude arguments is
 an error rather than being silently forwarded.
