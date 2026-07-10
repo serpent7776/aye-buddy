@@ -200,6 +200,18 @@ stores, other projects under `$HOME`, `/home/<other-users>`, `/root`,
 `/var`, `/srv`. `$HOME` starts as a fresh tmpfs and only the paths
 listed above are mounted into it; everything else is invisible.
 
+## Tests
+
+```
+make test
+```
+
+Black-box tests for `aye-buddy`'s option parsing (`t/`). Each test runs
+the real script against a stub `bwrap` placed first on a hermetic
+`PATH`, then asserts on the argv the script would have `exec`'d — so the
+actual flag parsing, `--` handling, path resolution, and forwarding are
+exercised end to end without launching a real sandbox.
+
 ## Limitations
 
 - **Git worktrees and submodule working dirs are refused.** In a linked
