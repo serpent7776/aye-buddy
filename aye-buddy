@@ -445,7 +445,10 @@ unless ($proxy_port) {
 my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
 # --quiet + log-to-file keep pasta's own diagnostics (the IPv6 "local mode"
 # notes and friends) off the shared terminal, where they'd clutter claude's TUI.
-my @launch = ('pasta', '--config-net', '--quiet', '--log-file', $pasta_log, '--',
+# --ipv4-only: aye-net-helper only tightens IPv4 routes and aye-proxy is IPv4-
+# only, so a live IPv6 route in the netns would be an unfiltered egress path
+# around the proxy. Kill IPv6 at the source instead.
+my @launch = ('pasta', '--config-net', '--ipv4-only', '--quiet', '--log-file', $pasta_log, '--',
               $^X, $net_helper, $proxy_port, $blob_arg,
               ($allow_subnet ? '--allow-subnet' : ()), '--',
               'bwrap', @args);

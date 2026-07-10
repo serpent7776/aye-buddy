@@ -237,7 +237,9 @@ tightening it probes the proxy and, if reachability broke, reverts to the
 looser default-route-only routing so the session still works. `pasta`
 must be the parent of `bwrap` because it needs `sethostname`/namespace
 syscalls that `bwrap`'s seccomp denies — so it runs before the filter is
-installed.
+installed. `pasta` runs `--ipv4-only`: the proxy and the route tightening
+are IPv4-only, so a live IPv6 route in the namespace would be an unfiltered
+path around the proxy — IPv6 is disabled at the source instead.
 
 `--allow-subnet` keeps same-subnet hosts reachable (see the residual note
 below) — the escape hatch for a workload that needs a LAN host, or a setup
