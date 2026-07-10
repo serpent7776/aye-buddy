@@ -65,12 +65,15 @@ else
     echo "FAIL  allowlisted $ALLOWED_HOST via proxy got HTTP $code"; rc=1
 fi
 
-# (2) non-allowlisted host, through the proxy → expect 403 from aye-proxy
-code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 -x "$P" "https://$DENIED_HOST/" || echo 000)
+# (2) non-allowlisted host, through the proxy → expect 403 from aye-proxy.
+# Read %{http_connect} (the proxy'"'"'s response to the CONNECT), NOT %{http_code}
+# (the tunnelled request'"'"'s status, which is 000 when the tunnel is refused).
+code=$(curl -sS -o /dev/null -w "%{http_connect}" --max-time 15 -x "$P" "https://$DENIED_HOST/" 2>/dev/null)
+code=${code:-000}
 if [ "$code" = 403 ]; then
     echo "PASS  non-allowlisted $DENIED_HOST refused by proxy (403)"
 else
-    echo "FAIL  non-allowlisted $DENIED_HOST via proxy got HTTP $code (want 403)"; rc=1
+    echo "FAIL  non-allowlisted $DENIED_HOST via proxy got CONNECT $code (want 403)"; rc=1
 fi
 
 # (3) raw egress bypassing the proxy → must have NO route (reverse-shell path)
