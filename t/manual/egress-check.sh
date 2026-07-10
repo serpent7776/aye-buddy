@@ -16,7 +16,7 @@
 # get a 403, and raw off-subnet egress (reverse-shell path) must be blocked.
 #
 # Usage:  t/manual/egress-check.sh
-# Needs:  pasta, curl, ip, timeout, and aye-proxy + aye-net-helper in the repo.
+# Needs:  pasta, curl, ip, nft, timeout, perl, and aye-proxy + aye-net-helper.
 set -u
 
 here=$(cd "$(dirname "$0")/../.." && pwd)
@@ -43,11 +43,30 @@ PROXY_PORT=$(sed -n 's/^port=//p' "$proxy_out")
 [ -n "$PROXY_PORT" ] || { echo "FAIL: proxy did not report a port"; cat "$proxy_out.err"; exit 1; }
 echo "proxy listening on 127.0.0.1:$PROXY_PORT (allow: $ALLOWED_HOST)"
 
+# A decoy host-loopback service, standing in for a local DB / dashboard on
+# 127.0.0.1. pasta maps the gateway to host loopback for every port, so without
+# the nft loopback filter the sandbox could reach this at gateway:DECOY_PORT.
+# With the filter, only the proxy port gets through — that's the M1 assertion.
+decoy_out=$(mktemp)
+perl -MIO::Socket::INET -e '
+    $| = 1;
+    my $s = IO::Socket::INET->new(Listen => 16, LocalAddr => "127.0.0.1",
+        LocalPort => 0, ReuseAddr => 1) or die "decoy listen: $!";
+    print "port=", $s->sockport, "\n";
+    while (my $c = $s->accept) { close $c }
+' >"$decoy_out" 2>&1 &
+decoy_pid=$!
+trap 'kill "$proxy_pid" "$decoy_pid" 2>/dev/null; rm -f "$proxy_out" "$proxy_out.err" "$decoy_out"' EXIT
+for _ in $(seq 1 50); do grep -q '^port=' "$decoy_out" && break; sleep 0.1; done
+DECOY_PORT=$(sed -n 's/^port=//p' "$decoy_out")
+[ -n "$DECOY_PORT" ] || { echo "FAIL: decoy did not report a port"; cat "$decoy_out"; exit 1; }
+echo "decoy host-loopback service on 127.0.0.1:$DECOY_PORT (must stay unreachable)"
+
 # Assertions run inside the namespace. aye-net-helper (spawned by pasta) has
 # already restricted the route and exported HTTP(S)_PROXY; here we just probe.
 # EXPECT_LAN ("blocked"/"reachable") is the mode-specific expectation for a
 # same-subnet host. Vars flow through pasta -> helper -> bash.
-export ALLOWED_HOST DENIED_HOST BLOCKHOLE_IP
+export ALLOWED_HOST DENIED_HOST BLOCKHOLE_IP DECOY_PORT
 inner='
 set -u
 P="$HTTP_PROXY"
@@ -72,6 +91,12 @@ else echo "PASS  raw egress to $BLOCKHOLE_IP blocked (no route)"; fi
 if timeout 6 bash -c "exec 3<>/dev/tcp/$BLOCKHOLE_IP/443" 2>/dev/null; then
     echo "FAIL  /dev/tcp to $BLOCKHOLE_IP:443 connected"; rc=1
 else echo "PASS  /dev/tcp reverse-shell primitive blocked"; fi
+
+# Host-loopback side channel (M1): the gateway maps to the host loopback, so the
+# decoy service must NOT be reachable at gw:DECOY_PORT — only the proxy port is.
+if timeout 6 bash -c "exec 3<>/dev/tcp/$gw/$DECOY_PORT" 2>/dev/null; then
+    echo "FAIL  host-loopback decoy reachable at $gw:$DECOY_PORT — M1 side channel open"; rc=1
+else echo "PASS  host-loopback decoy at $gw:$DECOY_PORT blocked (nft loopback filter)"; fi
 
 # Same-subnet host: does the kernel have a route to it?
 if ip -4 route get "$lan" >/dev/null 2>&1; then lan_state=reachable; else lan_state=blocked; fi

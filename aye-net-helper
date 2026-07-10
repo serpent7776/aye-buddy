@@ -11,7 +11,9 @@
 #      the internet still has no route). --allow-subnet skips tightening
 #      outright. Finally it VERIFIES the seal actually holds — no route to the
 #      wider internet survived — and refuses to launch if it can't prove that,
-#      rather than run a session that looks filtered but isn't.
+#      rather than run a session that looks filtered but isn't. It also installs
+#      an nft filter dropping all but the proxy port on the gateway, so the
+#      pasta host-loopback mapping can't expose other 127.0.0.1 host services.
 #   2. rewrites @@AYE_PROXY@@ in the target argv to the proxy URL and exports
 #      HTTP(S)_PROXY, so both bwrap's --setenv values and plain clients pick it
 #      up.
@@ -82,6 +84,18 @@ egress_sealed() or die_h(
     "egress seal unverified — a route to the internet survived; refusing to launch.\n" .
     "  Re-run with --no-net-filter to run WITHOUT egress filtering.");
 
+# Close the host-loopback side channel (M1). pasta maps the gateway address to
+# the host's loopback for ALL ports, so with only the gateway routable a session
+# could still reach any 127.0.0.1 service on the host (a local DB, another proxy,
+# a metadata mock) — a pivot/exfil surface the route seal doesn't cover. Drop
+# every packet to the gateway except the proxy port, leaving the proxy as the
+# only thing the host exposes. Surgical (only the gateway address is touched), so
+# it composes with --allow-subnet, whose LAN traffic goes to other addresses.
+# Best-effort: unlike the internet seal this is secondary hardening, so if nft is
+# absent or the rules don't take we warn and carry on rather than refuse to
+# launch — the internet is still sealed either way.
+restrict_gateway_to_proxy($gwaddr, $port);
+
 # TCP-connect probe to the proxy: a plain reachability check (aye-proxy accepts
 # the connection and we drop it without a CONNECT).
 sub gateway_reachable {
@@ -103,6 +117,40 @@ sub egress_sealed {
     my $r = qx(ip -4 route get 203.0.113.1 2>&1);
     return 0 if $? == 0 && $r =~ /\bdev\b/;
     return 1;
+}
+
+# Install an nft OUTPUT filter allowing only tcp/$p to the gateway and dropping
+# everything else addressed to it; policy stays accept so non-gateway traffic is
+# governed by routing alone. $gw comes from `ip route` (an IPv4 literal) and $p
+# from argv — validate both before they reach the ruleset, and feed nft via a
+# pipe (no shell) so neither can inject.
+sub restrict_gateway_to_proxy {
+    my ($gw, $p) = @_;
+    $p  =~ /\A[0-9]+\z/     or return warn_h("proxy port '$p' not numeric; skipping loopback hardening");
+    $gw =~ /\A[0-9.]+\z/    or return warn_h("gateway '$gw' not an IPv4 literal; skipping loopback hardening");
+    my $skipped = "host-loopback services stay reachable via the gateway (internet egress is still sealed)";
+    # If nft is missing the piped child's exec fails and the write below hits a
+    # dead pipe; ignore SIGPIPE so that degrades to a warning instead of killing
+    # the helper (which would abort the whole launch).
+    local $SIG{PIPE} = 'IGNORE';
+    my $ok = open(my $nft, '|-', 'nft', '-f', '-');
+    $ok or return warn_h("nft unavailable; $skipped");
+    print $nft <<"NFT";
+table inet aye_egress {
+    chain output {
+        type filter hook output priority 0; policy accept;
+        ip daddr $gw tcp dport $p accept
+        ip daddr $gw drop
+    }
+}
+NFT
+    close $nft or return warn_h("nft rules did not apply; $skipped");
+    # A rule quirk that broke proxy reachability would break every session; drop
+    # our table and degrade rather than wedge the sandbox.
+    gateway_reachable($gw, $p) or do {
+        system('nft', 'delete', 'table', 'inet', 'aye_egress');
+        warn_h("proxy unreachable after loopback hardening; removed it — $skipped");
+    };
 }
 
 # Point clients at the proxy (reached via the gateway, which pasta maps to the

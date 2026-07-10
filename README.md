@@ -233,13 +233,25 @@ claude`). `pasta` gives the namespace a userspace uplink; `aye-net-helper`
 tightens the netns route to a single host route to the gateway — so only
 the proxy is reachable, and both the wider internet and same-subnet (LAN)
 hosts lose their route — then points `HTTP(S)_PROXY` at it. After
-tightening it probes the proxy and, if reachability broke, reverts to the
-looser default-route-only routing so the session still works. `pasta`
-must be the parent of `bwrap` because it needs `sethostname`/namespace
-syscalls that `bwrap`'s seccomp denies — so it runs before the filter is
-installed. `pasta` runs `--ipv4-only`: the proxy and the route tightening
-are IPv4-only, so a live IPv6 route in the namespace would be an unfiltered
-path around the proxy — IPv6 is disabled at the source instead.
+tightening it probes the proxy and, if reachability broke, restores just
+the on-link subnet route (never a default route, which would reopen the
+internet) so the session still works. It then verifies the seal actually
+holds — no route to the wider internet survived — and refuses to launch if
+it can't prove that, rather than run a session that looks filtered but
+isn't. `pasta` must be the parent of `bwrap` because it needs
+`sethostname`/namespace syscalls that `bwrap`'s seccomp denies — so it runs
+before the filter is installed. `pasta` runs `--ipv4-only`: the proxy and
+the route tightening are IPv4-only, so a live IPv6 route in the namespace
+would be an unfiltered path around the proxy — IPv6 is disabled at the
+source instead.
+
+Because `pasta` maps the gateway address to the host's loopback for every
+port, a route to the gateway alone would also expose any `127.0.0.1`
+service on the host (a local database, another proxy). `aye-net-helper`
+installs an `nft` rule dropping all traffic to the gateway except the proxy
+port, so the proxy is the only host service the sandbox can reach. This
+needs `nft`; if it's missing the rule is skipped with a warning (the
+internet seal still holds — only this host-loopback hardening is lost).
 
 `--allow-subnet` keeps same-subnet hosts reachable (see the residual note
 below) — the escape hatch for a workload that needs a LAN host, or a setup
