@@ -104,9 +104,10 @@ aye-buddy --bind-ro /data/refs --bind ~/scratch -p "compare against the refs"
 ```
 
 Paths are resolved relative to the current directory and added to the
-Landlock ruleset, so they work the same with or without `--allow-bwrap`;
-a missing or empty PATH is rejected rather than silently binding the
-current directory. `aye-buddy`'s own flags must come before any arguments
+Landlock ruleset, so they work the same with or without `--allow-bwrap`.
+Symlinks are resolved, so a bind lands at its real target. A missing,
+empty, or non-existent PATH is rejected up front rather than silently
+binding the current directory or failing obscurely inside bwrap. `aye-buddy`'s own flags must come before any arguments
 meant for `claude`; an optional `--` separator ends `aye-buddy`'s flags explicitly,
 so anything after it (even a literal `--allow-bwrap`) is passed straight
 to `claude`. A misplaced `aye-buddy` flag after the claude arguments is

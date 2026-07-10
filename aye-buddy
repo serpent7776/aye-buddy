@@ -57,10 +57,18 @@ if (!$saw_sep) {
              "  move it before them, or use `--` to force it through to claude.");
     }
 }
-@extra_rw = map { length or fail("--bind requires a PATH argument");
-                  Cwd::abs_path($_) // fail("--bind: cannot resolve path: $_") } @extra_rw;
-@extra_ro = map { length or fail("--bind-ro requires a PATH argument");
-                  Cwd::abs_path($_) // fail("--bind-ro: cannot resolve path: $_") } @extra_ro;
+# Resolve each extra path to an absolute, existing one. abs_path still returns a
+# path for a missing leaf or a broken symlink (only a missing *intermediate*
+# gives undef), so -e guards against a cryptic bwrap "no such file" abort later.
+sub resolve_bind {
+    my ($flag, $path) = @_;
+    length $path or fail("$flag requires a PATH argument");
+    my $abs = Cwd::abs_path($path) // fail("$flag: cannot resolve path: $path");
+    -e $abs or fail("$flag: no such path: $path");
+    return $abs;
+}
+@extra_rw = map { resolve_bind('--bind',    $_) } @extra_rw;
+@extra_ro = map { resolve_bind('--bind-ro', $_) } @extra_ro;
 
 # $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
 # The helpers live next to the installed script.
