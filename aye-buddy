@@ -38,12 +38,15 @@ for my $cmd (qw(bwrap claude)) {
 #     sandbox (rw/ro). Repeatable. Resolved below so claude never sees them. `:s`
 #     (optional value) so a missing PATH lands as '' we can reject, rather than
 #     swallowing the next flag as the path.
+#   --allow-host HOST[:PORT] adds an extra host to the network egress allowlist
+#     on top of the builtin defaults. Repeatable; same `:s` reasoning.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap = 0;
-my (@extra_rw, @extra_ro);
+my (@extra_rw, @extra_ro, @extra_hosts);
 GetOptions('allow-bwrap' => \$allow_bwrap,
-           'bind:s'      => \@extra_rw,
-           'bind-ro:s'   => \@extra_ro)
+           'bind:s'       => \@extra_rw,
+           'bind-ro:s'    => \@extra_ro,
+           'allow-host:s' => \@extra_hosts)
     or fail("invalid aye-buddy option");
 # pass_through leaves a leading `--` in place; consume it as our separator so a
 # literal `--allow-bwrap` etc. can still reach claude untouched.
@@ -52,7 +55,8 @@ my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
 # misplaced flag, not a claude one: fail loudly rather than forward it silently.
 if (!$saw_sep) {
     for my $arg (@ARGV) {
-        next unless $arg eq '--allow-bwrap' || $arg eq '--bind' || $arg eq '--bind-ro';
+        next unless $arg eq '--allow-bwrap' || $arg eq '--bind'
+                 || $arg eq '--bind-ro'     || $arg eq '--allow-host';
         fail("$arg is an aye-buddy flag but came after claude's arguments;\n" .
              "  move it before them, or use `--` to force it through to claude.");
     }
@@ -69,6 +73,18 @@ sub resolve_bind {
 }
 @extra_rw = map { resolve_bind('--bind',    $_) } @extra_rw;
 @extra_ro = map { resolve_bind('--bind-ro', $_) } @extra_ro;
+
+# Validate each --allow-host value: a hostname or literal IP, optionally with a
+# :PORT. No wildcards — the filter resolves names to addresses, and '*.x' has no
+# address. Reject junk here rather than letting it reach the filter as a rule.
+sub resolve_allow_host {
+    my ($host) = @_;
+    length $host or fail("--allow-host requires a HOST argument");
+    $host =~ /\A[A-Za-z0-9._-]+(?::[0-9]+)?\z/
+        or fail("--allow-host: invalid host (want HOST or HOST:PORT): $host");
+    return $host;
+}
+@extra_hosts = map { resolve_allow_host($_) } @extra_hosts;
 
 # --- Network egress policy ------------------------------------------------
 # The canonical allowlist of hosts a session may reach. The filtering layer
@@ -101,7 +117,7 @@ my @default_allow_hosts = (
     'objects.githubusercontent.com',
     'gitlab.com',
 );
-my @allow_hosts = @default_allow_hosts;
+my @allow_hosts = (@default_allow_hosts, @extra_hosts);
 print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
     if $ENV{AYE_BUDDY_DEBUG};
 
