@@ -107,10 +107,11 @@ sub resolve_allow_host {
 # SSH git hosts are intentionally absent — reaching them is the raw-TCP lane
 # (opened per host), because an open host:22 doubles as a reverse-shell target.
 my @default_allow_hosts = (
-    # Claude API, telemetry, OAuth — without these the session can't run
+    # Claude API, telemetry, OAuth — without these the session can't run.
     'api.anthropic.com',
     'statsig.anthropic.com',
     'sentry.io',
+    'platform.claude.com',
     'console.anthropic.com',
     # npm
     'registry.npmjs.org',
