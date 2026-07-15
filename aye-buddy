@@ -412,7 +412,7 @@ unless ($net_filter) {
 #    on exit; AYE_BUDDY_DEBUG prints its path and keeps it for inspection.
 my $tmpdir = $ENV{TMPDIR} // '/tmp';
 my $logdir = "$tmpdir/aye-buddy";
-eval { make_path($logdir, { mode => 0700 }) };
+eval { make_path($logdir, { mode => 0700 }) };  ## no critic (ProhibitLeadingZeros)
 $logdir = $tmpdir unless -d $logdir;    # fall back to TMPDIR if the dir failed
 my $proxy_log = "$logdir/aye-proxy.$$.log";
 my $pasta_log = "$logdir/aye-pasta.$$.log";
