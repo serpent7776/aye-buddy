@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; [ -n \"$f\" ] && [ -f \"$f\" ] || exit 0; case \"$f\" in *.pl|*.pm|*.t|*.psgi|*.pod) ;; *) IFS= read -r first < \"$f\" 2>/dev/null; case \"$first\" in '#!'*perl*) ;; *) exit 0 ;; esac ;; esac; pc=$(command -v perlcritic || echo /usr/bin/vendor_perl/perlcritic); out=$(\"$pc\" --quiet \"$f\" 2>&1) && exit 0; printf 'perlcritic (%s):\\n%s\\n' \"$f\" \"$out\" >&2; exit 2; }",
+            "statusMessage": "Running perlcritic"
+          }
+        ]
+      }
+    ]
+  }
+}
