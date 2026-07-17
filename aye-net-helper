@@ -20,13 +20,14 @@
 #   2. rewrites @@AYE_PROXY@@ in the target argv to the proxy URL and exports
 #      HTTP(S)_PROXY, so both bwrap's --setenv values and plain clients pick it
 #      up.
-#   3. reopens the seccomp blob on fd 3 for `bwrap --seccomp 3` — pasta need
-#      not preserve inherited fds across exec, so we own that fd here.
+#   3. arms the seccomp blob and splices its fd into `bwrap --seccomp` — pasta
+#      need not preserve inherited fds across exec, so we own that fd here.
 # then execs the target (bwrap, or in the test harness a probe command).
 use strict;
 use warnings;
-use POSIX ();
-use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
+use FindBin qw($RealBin);
+use lib $RealBin;
+use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN);
 use IO::Socket::INET ();
 
 sub die_h { print STDERR "aye-net-helper: $_[0]\n"; exit 1 }
@@ -178,15 +179,11 @@ my $url = "http://$gwaddr:$port";
 s/\@\@AYE_PROXY\@\@/$url/g for @cmd;
 $ENV{$_} = $url for qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy);
 
-# Reopen the seccomp blob on fd 3 (kept in scope until exec, cloexec cleared).
+# $keep stays in scope until exec so the fd survives into bwrap.
 my $keep;
 if ($seccomp ne '-') {
-    open($keep, '<', $seccomp) or die_h("open seccomp $seccomp: $!");
-    POSIX::dup2(fileno($keep), 3) == 3 or die_h("dup2 fd3: $!");
-    open(my $fd3, '<&=', 3) or die_h("reopen fd3: $!");
-    my $fl = fcntl($fd3, F_GETFD, 0);
-    fcntl($fd3, F_SETFD, $fl & ~FD_CLOEXEC) or die_h("clear cloexec: $!");
-    $keep = $fd3;
+    $keep = eval { arm_seccomp(\@cmd, $seccomp) }
+        or die_h($@ =~ s/\n\z//r);
 }
 
 exec { $cmd[0] } @cmd or die_h("exec $cmd[0]: $!");

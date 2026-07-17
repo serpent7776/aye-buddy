@@ -6,8 +6,9 @@ use warnings;
 use Cwd ();
 use POSIX ();
 use Getopt::Long qw(GetOptions);
-use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
 use FindBin qw($RealBin);
+use lib $RealBin;
+use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN);
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
 
@@ -315,11 +316,12 @@ if ($use_landlock) {
 
 # Apply the seccomp denylist to the payload. bwrap installs it after building the
 # sandbox (so it doesn't block bwrap's own unshare/mount) and reads it from an
-# inherited fd. We dup the blob onto fd 3 before exec and pass `--seccomp 3`.
+# inherited fd. We pass a placeholder for the fd number now; whichever process
+# execs bwrap arms the blob and rewrites the token to its own fd.
 my $use_seccomp = 0;
 if (-r $seccomp_blob) {
     $use_seccomp = 1;
-    push @args, '--seccomp', '3';
+    push @args, '--seccomp', SECCOMP_FD_TOKEN;
 } else {
     warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
 }
@@ -379,21 +381,13 @@ push @args,
     @payload;
 
 unless ($net_filter) {
-    # Unfiltered path: dup the seccomp blob onto fd 3 for `--seccomp 3` and exec
-    # bwrap directly. Perl opens fds close-on-exec, so we clear FD_CLOEXEC —
-    # otherwise the kernel closes fd 3 at exec and bwrap reads a dead fd. The
-    # handle must stay in scope until exec. Done last so nothing else takes fd 3.
-    my ($seccomp_fh, $seccomp_fd3);
+    # Unfiltered path: arm the seccomp blob (splices its fd into @args for the
+    # placeholder) and exec bwrap directly. $seccomp_fh must stay in scope until
+    # exec so the kernel doesn't close the fd out from under bwrap.
+    my $seccomp_fh;
     if ($use_seccomp) {
-        open($seccomp_fh, '<', $seccomp_blob)
-            or fail("cannot open seccomp blob $seccomp_blob: $!");
-        POSIX::dup2(fileno($seccomp_fh), 3) == 3
-            or fail("cannot place seccomp blob on fd 3: $!");
-        open($seccomp_fd3, '<&=', 3)
-            or fail("cannot reopen fd 3: $!");
-        my $flags = fcntl($seccomp_fd3, F_GETFD, 0);
-        fcntl($seccomp_fd3, F_SETFD, $flags & ~FD_CLOEXEC)
-            or fail("cannot clear close-on-exec on fd 3: $!");
+        $seccomp_fh = eval { arm_seccomp(\@args, $seccomp_blob) }
+            or fail($@ =~ s/\n\z//r);
     }
     exec { 'bwrap' } 'bwrap', @args
         or fail("exec bwrap: $!");
@@ -403,7 +397,7 @@ unless ($net_filter) {
 # the host, launches the sandbox under pasta, waits, then always kills the
 # proxy. Under pasta the chain is pasta -> aye-net-helper -> bwrap -> claude;
 # aye-net-helper drops the netns default route, rewrites @@AYE_PROXY@@ to the
-# proxy URL, and reopens the seccomp blob on fd 3 (pasta need not preserve fds).
+# proxy URL, and arms the seccomp blob itself (pasta need not preserve fds).
 
 # 1. Start aye-proxy; read the ephemeral port it binds from its stdout. The
 #    allowlist is passed via the environment so it isn't exposed in `ps`. The
@@ -441,7 +435,7 @@ unless ($proxy_port) {
 }
 
 # 2. Run the sandbox under pasta. '-' when seccomp is off tells the helper not
-#    to set up fd 3.
+#    to arm the blob.
 my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
 # --quiet + log-to-file keep pasta's own diagnostics (the IPv6 "local mode"
 # notes and friends) off the shared terminal, where they'd clutter claude's TUI.

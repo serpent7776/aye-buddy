@@ -4,9 +4,10 @@ use Test2::V0;
 use lib 't/lib';
 use AyeTest;
 
-# --seccomp always rides on fd 3, but which blob is opened is chosen by
-# --allow-bwrap. We can't see the fd from the argv, so we assert on the
-# observable consequences instead: the warnings and the payload wrapper.
+# --seccomp rides on an inherited fd (the number is spliced in at exec time),
+# but which blob is opened is chosen by --allow-bwrap. We can't see the fd from
+# the argv, so we assert on the observable consequences instead: the warnings
+# and the payload wrapper.
 
 subtest 'default run: no --allow-bwrap warning' => sub {
     my $r = run_aye();

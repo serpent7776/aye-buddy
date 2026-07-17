@@ -25,25 +25,19 @@ install -d "$BINDIR"
 install -m 0755 "$SRC_DIR/$SCRIPT" "$BINDIR/$SCRIPT"
 printf 'installed %s -> %s\n' "$SCRIPT" "$BINDIR/$SCRIPT"
 
-# Companion files for the defense-in-depth layers (see TODO.md). aye-buddy
-# looks for these next to itself: ll-helper drives the Landlock ruleset,
-# filter.bpf is the precompiled seccomp denylist, filter-nested.bpf its relaxed
-# --allow-bwrap variant, aye-proxy is the filtering egress proxy and
-# aye-net-helper restricts the netns route (both for --net-filter). The blobs
-# are optional at runtime — aye-buddy warns and degrades if one is missing — so
-# a missing blob (needs `make seccomp`, which wants libseccomp) is only a
-# warning here, not a failure.
-for f in ll-helper aye-proxy aye-net-helper filter.bpf filter-nested.bpf; do
-    if [ -f "$SRC_DIR/$f" ]; then
-        case "$f" in
-            *.bpf) mode=0644 ;;
-            *)     mode=0755 ;;
-        esac
-        install -m "$mode" "$SRC_DIR/$f" "$BINDIR/$f"
-        printf 'installed %s -> %s\n' "$f" "$BINDIR/$f"
-    else
-        printf 'warning: %s not found in %s; run `make seccomp` to build it\n' "$f" "$SRC_DIR"
+for f in AyeSeccomp.pm ll-helper aye-proxy aye-net-helper filter.bpf filter-nested.bpf; do
+    if [ ! -f "$SRC_DIR/$f" ]; then
+        msg="install.sh: required $SRC_DIR/$f not found"
+        case "$f" in *.bpf) msg="$msg (run \`make seccomp\` to build it)" ;; esac
+        echo "$msg" >&2
+        exit 1
     fi
+    case "$f" in
+        *.bpf|*.pm) mode=0644 ;;
+        *)          mode=0755 ;;
+    esac
+    install -m "$mode" "$SRC_DIR/$f" "$BINDIR/$f"
+    printf 'installed %s -> %s\n' "$f" "$BINDIR/$f"
 done
 
 case ":$PATH:" in
