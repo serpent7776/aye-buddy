@@ -27,7 +27,7 @@ use strict;
 use warnings;
 use FindBin qw($RealBin);
 use lib $RealBin;
-use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN);
+use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
 use IO::Socket::INET ();
 
 sub die_h { print STDERR "aye-net-helper: $_[0]\n"; exit 1 }
@@ -176,7 +176,7 @@ NFT
 # Point clients at the proxy (reached via the gateway, which pasta maps to the
 # host where aye-proxy listens).
 my $url = "http://$gwaddr:$port";
-$_ eq '@@AYE_PROXY@@' and $_ = $url for @cmd;
+$_ eq PROXY_TOKEN and $_ = $url for @cmd;
 $ENV{$_} = $url for qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy);
 
 # $keep stays in scope until exec so the fd survives into bwrap.

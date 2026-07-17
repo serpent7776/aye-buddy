@@ -5,10 +5,12 @@ use warnings;
 use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
 use Exporter qw(import);
 
-our @EXPORT_OK = qw(arm_seccomp SECCOMP_FD_TOKEN);
+our @EXPORT_OK = qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
 
-# Placeholder aye-buddy bakes into the bwrap argv in place of the fd number.
+# Placeholders aye-buddy bakes into the bwrap argv; rewritten just before exec.
+# One home for each token so a bake site and its rewrite can't drift apart.
 use constant SECCOMP_FD_TOKEN => '@@AYE_SECCOMP_FD@@';
+use constant PROXY_TOKEN      => '@@AYE_PROXY@@';
 
 # Open the blob, clear close-on-exec (Perl opens fds cloexec) so the fd survives
 # the exec into bwrap, and rewrite SECCOMP_FD_TOKEN in @$argv to that fd number.

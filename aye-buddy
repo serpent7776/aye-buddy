@@ -8,7 +8,7 @@ use POSIX ();
 use Getopt::Long qw(GetOptions);
 use FindBin qw($RealBin);
 use lib $RealBin;
-use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN);
+use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
 
@@ -343,10 +343,10 @@ if ($use_landlock) {
 # --clearenv above means these are the only proxy vars the session sees.
 if ($net_filter) {
     push @args,
-        '--setenv', 'HTTP_PROXY',  '@@AYE_PROXY@@',
-        '--setenv', 'HTTPS_PROXY', '@@AYE_PROXY@@',
-        '--setenv', 'http_proxy',  '@@AYE_PROXY@@',
-        '--setenv', 'https_proxy', '@@AYE_PROXY@@';
+        '--setenv', 'HTTP_PROXY',  PROXY_TOKEN,
+        '--setenv', 'HTTPS_PROXY', PROXY_TOKEN,
+        '--setenv', 'http_proxy',  PROXY_TOKEN,
+        '--setenv', 'https_proxy', PROXY_TOKEN;
 }
 
 push @args,
