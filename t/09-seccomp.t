@@ -30,6 +30,18 @@ subtest 'arm_seccomp: splices the fd into the argv and clears close-on-exec' => 
         'a missing blob dies with a clear message';
 };
 
+subtest 'arm_seccomp: only the first token is rewritten; missing token dies' => sub {
+    my $blob = "$FindBin::RealBin/../filter.bpf";
+    # A payload arg equal to the sentinel must survive as the user's own value.
+    my @argv = ('--seccomp', SECCOMP_FD_TOKEN, '--', 'claude', SECCOMP_FD_TOKEN);
+    my $fh = arm_seccomp(\@argv, $blob);
+    is $argv[1], fileno($fh), 'the planted token becomes the fd';
+    is $argv[4], SECCOMP_FD_TOKEN, 'a payload arg equal to the sentinel is left alone';
+
+    like dies { arm_seccomp(['--other'], $blob) }, qr/placeholder not found/,
+        'no token to rewrite dies loudly rather than passing a literal to bwrap';
+};
+
 subtest 'token is the documented placeholder' => sub {
     is SECCOMP_FD_TOKEN, '@@AYE_SECCOMP_FD@@', 'stable across both scripts';
 };

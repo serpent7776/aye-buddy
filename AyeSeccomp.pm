@@ -22,10 +22,12 @@ sub arm_seccomp {
     defined $flags or die "F_GETFD on seccomp blob: $!\n";
     fcntl($fh, F_SETFD, $flags & ~FD_CLOEXEC) or die "clear cloexec on seccomp blob: $!\n";
     my $fd = fileno($fh);
-    # Whole-element replace, never a substring: an argv value that merely
-    # contains the sentinel can't be corrupted.
-    $_ eq SECCOMP_FD_TOKEN and $_ = $fd for @$argv;
-    return $fh;
+    for (@$argv) {
+        next unless $_ eq SECCOMP_FD_TOKEN;
+        $_ = $fd;
+        return $fh;
+    }
+    die "seccomp fd placeholder not found in argv\n";
 }
 
 1;

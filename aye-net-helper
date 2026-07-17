@@ -176,7 +176,7 @@ NFT
 # Point clients at the proxy (reached via the gateway, which pasta maps to the
 # host where aye-proxy listens).
 my $url = "http://$gwaddr:$port";
-s/\@\@AYE_PROXY\@\@/$url/g for @cmd;
+$_ eq '@@AYE_PROXY@@' and $_ = $url for @cmd;
 $ENV{$_} = $url for qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy);
 
 # $keep stays in scope until exec so the fd survives into bwrap.
