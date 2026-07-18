@@ -167,6 +167,13 @@ subtest 'usage errors are reported and exit 1 before touching the network' => su
         qr/expected -- separator/, 'a missing -- separator is rejected';
     like run_helper({ raw_argv => ['8080', '-', '--'] })->{err},
         qr/no command to exec/, 'a -- with no command is rejected';
+
+    like run_helper({ raw_argv => ['nope', '-', '--', 'true'] })->{err},
+        qr/not a valid TCP port/, 'a non-numeric port is rejected';
+    like run_helper({ raw_argv => ['0', '-', '--', 'true'] })->{err},
+        qr/not a valid TCP port/, 'port 0 is rejected';
+    like run_helper({ raw_argv => ['70000', '-', '--', 'true'] })->{err},
+        qr/not a valid TCP port/, 'an out-of-range port is rejected';
 };
 
 subtest 'a netns with no default route refuses to launch' => sub {

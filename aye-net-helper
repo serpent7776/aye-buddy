@@ -33,9 +33,13 @@ use IO::Socket::INET ();
 sub die_h { print STDERR "aye-net-helper: $_[0]\n"; exit 1 }
 sub warn_h { print STDERR "aye-net-helper: $_[0]\n" }
 
+# A real TCP port. An out-of-range value would reach nft as `tcp dport N` and
+# fail the whole ruleset, silently dropping the loopback/IPv6 hardening.
+sub valid_port { $_[0] =~ /\A[0-9]+\z/ && $_[0] >= 1 && $_[0] <= 65535 }
+
 # argv: PROXY_PORT  SECCOMP(-|path)  [--allow-subnet]  --  CMD [ARG...]
 my $port    = shift // die_h('usage: aye-net-helper PORT SECCOMP [--allow-subnet] -- CMD...');
-$port =~ /\A[0-9]+\z/ or die_h("proxy port '$port' not numeric");
+valid_port($port) or die_h("proxy port '$port' not a valid TCP port (1-65535)");
 my $seccomp = shift // die_h('missing SECCOMP argument (path or -)');
 my $allow_subnet = 0;
 if (@ARGV && $ARGV[0] eq '--allow-subnet') { $allow_subnet = 1; shift }
