@@ -233,6 +233,12 @@ subtest 'a surviving default route fails the seal and refuses to launch' => sub 
     is $r->{out}, '', 'the target never ran';
 };
 
+subtest 'a narrow nexthop route the probe misses still fails the seal' => sub {
+    my $r = run_helper({ link => "8.8.8.0/24 via 10.0.2.1 dev aye0\n" });
+    is $r->{exit}, 1, 'refuses to launch';
+    like $r->{err}, qr/egress seal unverified/, 'the via-scan arm catches it';
+};
+
 subtest 'a concrete route to the probe address also fails the seal' => sub {
     # default is gone, but `route get` still resolves a route out -> not sealed.
     my $r = run_helper({ unsealed => 1 });
