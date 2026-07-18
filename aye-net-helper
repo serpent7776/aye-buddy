@@ -35,6 +35,7 @@ sub warn_h { print STDERR "aye-net-helper: $_[0]\n" }
 
 # argv: PROXY_PORT  SECCOMP(-|path)  [--allow-subnet]  --  CMD [ARG...]
 my $port    = shift // die_h('usage: aye-net-helper PORT SECCOMP [--allow-subnet] -- CMD...');
+$port =~ /\A[0-9]+\z/ or die_h("proxy port '$port' not numeric");
 my $seccomp = shift // die_h('missing SECCOMP argument (path or -)');
 my $allow_subnet = 0;
 if (@ARGV && $ARGV[0] eq '--allow-subnet') { $allow_subnet = 1; shift }
@@ -139,12 +140,9 @@ sub egress_sealed {
 # else addressed to it, and drop all IPv6 egress (netns loopback stays up). The
 # proxy is IPv4-only, so v6 has no legitimate path out — this closes the v6 twin
 # of the host-loopback side channel the v4 rule handles. Policy stays accept so
-# other v4 traffic is governed by routing alone. $gw comes from `ip route` (an
-# IPv4 literal) and $p from argv — validate both before they reach the ruleset,
-# and feed nft via a pipe (no shell) so neither can inject.
+# other v4 traffic is governed by routing alone.
 sub restrict_gateway_to_proxy {
     my ($gw, $p) = @_;
-    $p  =~ /\A[0-9]+\z/     or return warn_h("proxy port '$p' not numeric; skipping loopback hardening");
     $gw =~ /\A[0-9.]+\z/    or return warn_h("gateway '$gw' not an IPv4 literal; skipping loopback hardening");
     my $skipped = "host-loopback and IPv6 side channels stay reachable (the internet route seal still holds)";
     # If nft is missing the piped child's exec fails and the write below hits a
