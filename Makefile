@@ -35,7 +35,7 @@ clean:
 
 uninstall:
 	@for d in "$$HOME/.local/bin" "$$HOME/bin"; do \
-	    rm -f "$$d/aye-buddy" "$$d/ll-helper" "$$d/aye-proxy" "$$d/aye-net-helper" "$$d/filter.bpf" "$$d/filter-nested.bpf"; \
+	    rm -f "$$d/aye-buddy" "$$d/ll-helper" "$$d/aye-proxy" "$$d/aye-net-helper" "$$d/AyeSeccomp.pm" "$$d/filter.bpf" "$$d/filter-nested.bpf"; \
 	done
 	@rm -f "$$HOME/.config/fish/functions/claude.fish"
 	@echo "note: for bash/zsh, remove the 'aye-buddy: claude shell function' block from your rc file manually"
