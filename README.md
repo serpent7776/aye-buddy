@@ -356,3 +356,7 @@ namespaces) is verified out-of-band by `t/manual/egress-check.sh`.
 - **OAuth refresh race.** Running a host `claude` and a sandboxed
   `aye-buddy` session simultaneously can invalidate each other's
   refresh token. Don't run both at the same time.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
