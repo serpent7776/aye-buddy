@@ -80,10 +80,34 @@ static const char *deny_enosys[] = {
     NULL,
 };
 
+/* Arches the one committed blob covers. A seccomp filter dispatches on
+ * data.arch first; any arch NOT listed here falls through to the default action
+ * (ALLOW) — i.e. the sandbox silently does nothing on it. The build host's own
+ * arch is irrelevant: libseccomp resolves every syscall from its static tables,
+ * so an x86_64 box emits correct rules for all of these. Compat ABIs (X86/X32
+ * under x86_64, ARM under aarch64) are listed so a denied call can't sneak in
+ * through a compat entry point.
+ *
+ * Deliberately omitted: s390x (and other arches that reorder syscall args).
+ * libseccomp does NOT remap argument indices across arches, and the clone-flags
+ * rule below reads arg0 — correct here, but on s390x clone's flags are arg1, so
+ * a merged rule would mis-filter. Better to leave those arches out (fail open,
+ * caught by aye-buddy's runtime arch guard) than ship a wrong clone filter. */
+static const uint32_t target_arches[] = {
+    SCMP_ARCH_X86_64, SCMP_ARCH_X86, SCMP_ARCH_X32,
+    SCMP_ARCH_AARCH64, SCMP_ARCH_ARM,
+    SCMP_ARCH_PPC64LE,
+    SCMP_ARCH_RISCV64,
+#ifdef SCMP_ARCH_LOONGARCH64
+    SCMP_ARCH_LOONGARCH64,
+#endif
+};
+
 /* clone() namespace-creation flags. We allow clone() for threads/processes but
  * deny it when any new-namespace flag is set — the remaining way to spin up a
  * fresh user/mount namespace once unshare/setns are blocked. One masked rule
- * per flag (seccomp can read clone's scalar flags arg; arg0 on x86/x86_64/arm). */
+ * per flag (seccomp can read clone's scalar flags arg; arg0 on every arch in
+ * target_arches[]). */
 static const unsigned long clone_ns_flags[] = {
     CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET,
     CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWCGROUP,
@@ -132,10 +156,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Also filter the 32-bit/x32 ABIs on x86_64 so a denied syscall can't be
-     * reached through a compat entry point. Harmless/no-op elsewhere. */
-    seccomp_arch_add(ctx, SCMP_ARCH_X86);
-    seccomp_arch_add(ctx, SCMP_ARCH_X32);
+    /* Cover every target arch, not just the build host's. seccomp_init() has
+     * already added the native arch; re-adding it returns -EEXIST, ignored. */
+    for (size_t i = 0; i < sizeof target_arches / sizeof *target_arches; i++) {
+        int rc = seccomp_arch_add(ctx, target_arches[i]);
+        if (rc < 0 && rc != -EEXIST)
+            fprintf(stderr, "gen-seccomp: warn: arch add 0x%x: %s\n",
+                    target_arches[i], strerror(-rc));
+    }
 
     for (const char **p = deny_eperm;  *p; p++) deny(ctx, *p, SCMP_ACT_ERRNO(EPERM));
     for (const char **p = deny_enosys; *p; p++) deny(ctx, *p, SCMP_ACT_ERRNO(ENOSYS));
