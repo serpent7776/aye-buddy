@@ -314,12 +314,54 @@ if ($use_landlock) {
         '--setenv', 'LL_RO', join("\n", @ll_ro);
 }
 
+# uname -m -> audit arch magic, for the arches gen-seccomp.c builds into the blob.
+my %audit_arch = (
+    x86_64  => 0xC000003E,                                      # x32 reports x86_64 too
+    i386 => 0x40000003, i486 => 0x40000003,
+    i586 => 0x40000003, i686 => 0x40000003,
+    aarch64 => 0xC00000B7,
+    armv6l  => 0x40000028, armv7l => 0x40000028, armv8l => 0x40000028,
+    ppc64le => 0xC0000015,
+    riscv64 => 0xC00000F3,
+    loongarch64 => 0xC0000102,
+);
+
+# True only if the blob has a real dispatch block for this host's arch. A seccomp
+# filter matches seccomp_data.arch and falls through to its default action (ALLOW)
+# for any arch it wasn't built for — so on an uncovered arch the blob is a silent
+# no-op. We read the blob rather than trust a static list, so this can't drift out
+# of sync with gen-seccomp.c and reopen that silent hole.
+sub seccomp_covers_host {
+    my ($blob) = @_;
+    my $machine = (POSIX::uname())[4];
+    my $magic = $audit_arch{$machine};
+    return (0, $machine) unless defined $magic;
+    open my $fh, '<:raw', $blob or return (0, $machine);
+    my $prog = do { local $/; <$fh> };
+    # sock_filter = { u16 code; u8 jt; u8 jf; u32 k }, little-endian (generated on
+    # x86_64; every covered arch is LE). The preamble BPF_JEQs seccomp_data.arch
+    # against each covered arch's magic; a BPF_JEQ carrying ours means a real
+    # dispatch block exists. The magics are distinctive enough that no syscall-nr
+    # or clone-flag comparison collides with them.
+    for (my $i = 0; $i + 8 <= length $prog; $i += 8) {
+        my ($code, $k) = unpack('v x2 V', substr($prog, $i, 8));  # code, k
+        return (1, $machine) if $code == 0x15 && $k == $magic;    # BPF_JMP|JEQ|K
+    }
+    return (0, $machine);
+}
+
 # Apply the seccomp denylist to the payload. bwrap installs it after building the
 # sandbox (so it doesn't block bwrap's own unshare/mount) and reads it from an
 # inherited fd. We pass a placeholder for the fd number now; whichever process
 # execs bwrap arms the blob and rewrites the token to its own fd.
 my $use_seccomp = 0;
 if (-r $seccomp_blob) {
+    # Fail closed: refuse to launch rather than run with a seccomp layer that this
+    # arch would silently ignore. Regenerate the blob (make seccomp) for the arch.
+    my ($covered, $machine) = seccomp_covers_host($seccomp_blob);
+    $covered or fail("seccomp blob doesn't cover this arch ($machine); it would be" .
+                     " a silent no-op here.\n  add $machine to gen-seccomp.c's" .
+                     " target_arches[] and rebuild (make seccomp).");
     $use_seccomp = 1;
     push @args, '--seccomp', SECCOMP_FD_TOKEN;
 } else {
