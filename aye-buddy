@@ -359,9 +359,10 @@ if (-r $seccomp_blob) {
     # Fail closed: refuse to launch rather than run with a seccomp layer that this
     # arch would silently ignore. Regenerate the blob (make seccomp) for the arch.
     my ($covered, $machine) = seccomp_covers_host($seccomp_blob);
-    $covered or fail("seccomp blob doesn't cover this arch ($machine); it would be" .
-                     " a silent no-op here.\n  add $machine to gen-seccomp.c's" .
-                     " target_arches[] and rebuild (make seccomp).");
+    $covered or fail("seccomp blob doesn't cover this machine's architecture" .
+                     " ($machine), so the syscall filter can't be enforced here.\n" .
+                     "  please open an issue in the aye-buddy repo reporting the" .
+                     " '$machine' architecture so support can be added.");
     $use_seccomp = 1;
     push @args, '--seccomp', SECCOMP_FD_TOKEN;
 } else {
