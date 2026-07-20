@@ -70,7 +70,7 @@ case "$(basename "$shell_path")" in
         mkdir -p "$(dirname "$func_file")"
         cat > "$func_file" <<'EOF'
 function claude
-    command aye-buddy $argv
+    command aye-buddy --agent claude $argv
 end
 EOF
         printf 'wrote %s\n' "$func_file"
@@ -88,7 +88,7 @@ EOF
         fi
         {
             printf '\n%s\n' "$marker"
-            printf 'claude() { command aye-buddy "$@"; }\n'
+            printf 'claude() { command aye-buddy --agent claude "$@"; }\n'
         } >> "$rc"
         printf 'added claude() to %s — run: source %s\n' "$rc" "$rc"
         ;;

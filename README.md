@@ -68,6 +68,7 @@ than being silently forwarded.
 
 | Flag | Effect |
 | --- | --- |
+| `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today. |
 | `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add a host to the network allowlist. Port-less allows 80/443. Repeatable. |

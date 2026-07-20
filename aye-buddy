@@ -24,14 +24,32 @@ sub on_path {
     return 0;
 }
 
-for my $cmd (qw(bwrap claude)) {
-    on_path($cmd) or fail("required command not found on PATH: $cmd");
-}
+on_path('bwrap') or fail("required command not found on PATH: bwrap");
+
+# Supported agents. Each entry names the binary to run plus the fixed args and
+# env aye-buddy injects for it; --agent picks one (default claude).
+my %AGENTS = (
+    claude => {
+        bin  => 'claude',
+        args => ['--dangerously-skip-permissions',
+                 '--settings', '{"sandbox":{"enabled":false}}'],
+        # Tell claude it's already inside an external sandbox so it skips the
+        # workspace trust dialog (the bwrap boundary is the real trust decision),
+        # and stop non-essential telemetry/error egress at the source.
+        env  => {
+            CLAUDE_CODE_SANDBOXED   => '1',
+            DISABLE_TELEMETRY       => '1',
+            DISABLE_ERROR_REPORTING => '1',
+        },
+    },
+);
 
 # Parse aye-buddy's own options off the front of @ARGV; the rest forwards to
 # claude. require_order stops at the first non-option and pass_through leaves the
 # remainder in @ARGV; no_auto_abbrev/no_ignore_case keep our flags exact-match so
 # a claude arg can't accidentally trigger one (e.g. `--all` is not --allow-bwrap).
+#   --agent NAME selects which agent to run (default claude). NAME must be a key
+#     of %AGENTS above; an unknown one fails rather than reaching bwrap.
 #   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing):
 #     opt-in, it widens the syscall surface and forces Landlock off, leaving the
 #     bwrap mount-namespace allowlist as the only outer wall.
@@ -51,14 +69,20 @@ Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_c
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
 my $allow_subnet = 0;
+my $agent        = 'claude';
 my (@extra_rw, @extra_ro, @extra_hosts);
 GetOptions('allow-bwrap'  => \$allow_bwrap,
            'net-filter!'   => \$net_filter,
            'allow-subnet'  => \$allow_subnet,
+           'agent=s'       => \$agent,
            'bind:s'        => \@extra_rw,
            'bind-ro:s'     => \@extra_ro,
            'allow-host:s'  => \@extra_hosts)
     or fail("invalid aye-buddy option");
+my $agent_spec = $AGENTS{$agent}
+    or fail("unknown agent: $agent (supported: " . join(', ', sort keys %AGENTS) . ")");
+on_path($agent_spec->{bin})
+    or fail("required command not found on PATH: $agent_spec->{bin}");
 # pass_through leaves a leading `--` in place; consume it as our separator so a
 # literal `--allow-bwrap` etc. can still reach claude untouched.
 my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
@@ -69,9 +93,9 @@ if (!$saw_sep) {
         next unless $arg eq '--allow-bwrap' || $arg eq '--bind'
                  || $arg eq '--bind-ro'     || $arg eq '--allow-host'
                  || $arg eq '--net-filter'  || $arg eq '--no-net-filter'
-                 || $arg eq '--allow-subnet';
-        fail("$arg is an aye-buddy flag but came after claude's arguments;\n" .
-             "  move it before them, or use `--` to force it through to claude.");
+                 || $arg eq '--allow-subnet' || $arg eq '--agent';
+        fail("$arg is an aye-buddy flag but came after the agent's arguments;\n" .
+             "  move it before them, or use `--` to force it through to the agent.");
     }
 }
 # Resolve each extra path to an absolute, existing one. abs_path still returns a
@@ -284,18 +308,12 @@ push @args,
     '--setenv', 'PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/bin/site_perl:/usr/bin/vendor_perl:/usr/bin/core_perl',
     '--setenv', 'PWD', $project_dir,
     '--setenv', 'TERM', ($ENV{TERM} // 'xterm'),
-    '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8'),
-    # Tell claude it's already inside an external sandbox so it skips the
-    # workspace trust dialog (the bwrap boundary is the actual trust
-    # decision here).
-    '--setenv', 'CLAUDE_CODE_SANDBOXED', '1',
-    # Stop non-essential telemetry/error egress at the source (Datadog/Statsig/
-    # Sentry). Targeted vars, not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC —
-    # that one also disables the auto-updater (CVE patches), feature flags, and
-    # TUI mouse clicks. Anything that still dials out is caught by the proxy
-    # allowlist anyway, so this just spares the noise.
-    '--setenv', 'DISABLE_TELEMETRY', '1',
-    '--setenv', 'DISABLE_ERROR_REPORTING', '1';
+    '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8');
+# Agent-specific env from %AGENTS (e.g. claude's sandbox/telemetry hints). Sorted
+# so the constructed argv is deterministic for the tests.
+for my $k (sort keys %{$agent_spec->{env}}) {
+    push @args, '--setenv', $k, $agent_spec->{env}{$k};
+}
 for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
                 LC_MONETARY COLORTERM NO_COLOR)) {
     my $val = $ENV{$var};
@@ -369,12 +387,11 @@ if (-r $seccomp_blob) {
     warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
 }
 
-# Payload: run claude directly, or wrap it in ll-helper so Landlock is applied
-# to the final sandbox view and inherited down into claude and its children.
+# Payload: run the agent directly, or wrap it in ll-helper so Landlock is applied
+# to the final sandbox view and inherited down into the agent and its children.
 my @payload = (
-    'claude',
-    '--dangerously-skip-permissions',
-    '--settings', '{"sandbox":{"enabled":false}}',
+    $agent_spec->{bin},
+    @{$agent_spec->{args}},
     @ARGV,
 );
 if ($use_landlock) {

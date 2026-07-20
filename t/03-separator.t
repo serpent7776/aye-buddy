@@ -17,13 +17,13 @@ sub payload {
 subtest 'misplaced --allow-bwrap after claude args fails loudly' => sub {
     my $r = run_aye('-p', 'hi', '--allow-bwrap');
     is $r->{exit}, 1, 'exits 1';
-    like $r->{err}, qr/came after claude's arguments/, 'points at the fix';
+    like $r->{err}, qr/came after the agent's arguments/, 'points at the fix';
 };
 
 subtest 'misplaced --bind after claude args fails loudly' => sub {
     my $r = run_aye('-p', 'hi', '--bind');
     is $r->{exit}, 1;
-    like $r->{err}, qr/came after claude's arguments/;
+    like $r->{err}, qr/came after the agent's arguments/;
 };
 
 subtest '-- forces a literal --allow-bwrap through to claude' => sub {
