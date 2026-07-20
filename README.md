@@ -1,8 +1,8 @@
 # aye-buddy
 
-Run Claude Code inside a sandbox so a session can only touch the project
-you're working on — not your SSH keys, cloud credentials, browser
-profiles, or other projects.
+Aye-buddy is your AI buddy. It runs Claude Code in a sandbox so a session can
+only touch the project you're working on — not your SSH keys, cloud
+credentials, browser profiles, other projects or personal files.
 
 ## Why
 
@@ -18,7 +18,7 @@ tells it to exfiltrate them.
 - **Only the current project and a few Claude config paths are visible.**
   Everything else under `$HOME` — and most of the system — simply isn't
   there.
-- **Network egress is filtered** (on by default). The session reaches the
+- **Network egress is filtered.** The session reaches the
   network only through a bundled proxy that allows a small list of hosts
   (Claude API, common package registries, git over HTTPS). Everything else
   has no route out, so an injected "open a reverse shell" command can't
@@ -127,9 +127,9 @@ WebSearch runs on Anthropic's servers, so it keeps working; only WebFetch
 - **No TLS interception.** The proxy decides by hostname without
   terminating TLS, so SNI spoofing / domain fronting can reach an off-list
   host that shares infrastructure with an allowed one.
-- **SSH git needs a hole.** SSH remotes don't traverse an HTTP proxy —
-  prefer HTTPS remotes, or allowlist the host. A raw-TCP lane for `HOST:22`
-  isn't wired up yet.
+- **SSH remotes aren't proxied automatically.** `ssh` doesn't honour
+  `HTTPS_PROXY` — prefer HTTPS remotes, or allowlist the host and route
+  `ssh` through the proxy with a `ProxyCommand`.
 
 `--no-net-filter` turns all of this off and restores full network access
 — useful for debugging or a workload the allowlist can't express.
@@ -145,7 +145,7 @@ namespaces (the default wherever `bwrap` already works).
 
 ## Limitations
 
-- **Write actions aren't restricted.** The session runs with claude's
+- **Project write actions aren't restricted.** The session runs with claude's
   permission prompts skipped, so it can run destructive in-project
   commands or `git push`. The threat model is read-exfil and egress, not
   write protection.
@@ -159,10 +159,6 @@ namespaces (the default wherever `bwrap` already works).
 - **`~/.claude` is shared with host-run sessions.** A session in project A
   can read transcripts from project B under `~/.claude/projects/`. Accepted
   trade for unified history.
-- **Nothing stops running `claude` directly.** Bypassing the wrapper is a
-  matter of not doing it; there's no enforcement.
-- **Don't run a host `claude` and a sandboxed session at the same time** —
-  they can invalidate each other's OAuth refresh token.
 
 ## Tests
 
