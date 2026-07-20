@@ -63,17 +63,19 @@ shell_path=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7 || true)
 case "$(basename "$shell_path")" in
     fish)
         func_file=$HOME/.config/fish/functions/claude.fish
-        if [ -f "$func_file" ]; then
-            printf 'claude function already present at %s\n' "$func_file"
-            exit 0
-        fi
+        existed=false
+        [ -f "$func_file" ] && existed=true
         mkdir -p "$(dirname "$func_file")"
         cat > "$func_file" <<'EOF'
 function claude
     command aye-buddy --agent claude $argv
 end
 EOF
-        printf 'wrote %s\n' "$func_file"
+        if $existed; then
+            printf 'updated %s\n' "$func_file"
+        else
+            printf 'wrote %s\n' "$func_file"
+        fi
         ;;
     *)
         case "$(basename "$shell_path")" in
@@ -82,14 +84,25 @@ EOF
             *)    rc=$HOME/.profile ;;
         esac
         marker='# aye-buddy: claude shell function'
+        # Drop any prior aye-buddy block (marker + the function line after it)
+        # so re-running replaces it instead of appending a duplicate.
+        existed=false
         if [ -f "$rc" ] && grep -qF "$marker" "$rc"; then
-            printf 'claude function already present in %s\n' "$rc"
-            exit 0
+            existed=true
+            tmp=$(mktemp "${TMPDIR:-/tmp}/aye-buddy.XXXXXX")
+            awk -v m="$marker" 'skip { skip=0; next } $0==m { skip=1; next } { print }' \
+                "$rc" > "$tmp"
+            cat "$tmp" > "$rc"
+            rm -f "$tmp"
         fi
         {
             printf '\n%s\n' "$marker"
             printf 'claude() { command aye-buddy --agent claude "$@"; }\n'
         } >> "$rc"
-        printf 'added claude() to %s — run: source %s\n' "$rc" "$rc"
+        if $existed; then
+            printf 'updated claude() in %s — run: source %s\n' "$rc" "$rc"
+        else
+            printf 'added claude() to %s — run: source %s\n' "$rc" "$rc"
+        fi
         ;;
 esac
