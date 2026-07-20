@@ -71,14 +71,22 @@ my $net_filter   = 1;
 my $allow_subnet = 0;
 my $agent        = 'claude';
 my (@extra_rw, @extra_ro, @extra_hosts);
-GetOptions('allow-bwrap'  => \$allow_bwrap,
-           'net-filter!'   => \$net_filter,
-           'allow-subnet'  => \$allow_subnet,
-           'agent=s'       => \$agent,
-           'bind:s'        => \@extra_rw,
-           'bind-ro:s'     => \@extra_ro,
-           'allow-host:s'  => \@extra_hosts)
-    or fail("invalid aye-buddy option");
+my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
+               'net-filter!'   => \$net_filter,
+               'allow-subnet'  => \$allow_subnet,
+               'agent=s'       => \$agent,
+               'bind:s'        => \@extra_rw,
+               'bind-ro:s'     => \@extra_ro,
+               'allow-host:s'  => \@extra_hosts);
+GetOptions(%opt_spec) or fail("invalid aye-buddy option");
+# The flags we own, derived from the specs above so there's one source of truth.
+# A `!` spec (net-filter) also owns its --no- form.
+my %our_flag;
+for my $spec (keys %opt_spec) {
+    (my $name = $spec) =~ s/[=:!].*//;
+    $our_flag{"--$name"} = 1;
+    $our_flag{"--no-$name"} = 1 if $spec =~ /!/;
+}
 my $agent_spec = $AGENTS{$agent}
     or fail("unknown agent: $agent (supported: " . join(', ', sort keys %AGENTS) . ")");
 on_path($agent_spec->{bin})
@@ -90,10 +98,7 @@ my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
 # misplaced flag, not a claude one: fail loudly rather than forward it silently.
 if (!$saw_sep) {
     for my $arg (@ARGV) {
-        next unless $arg eq '--allow-bwrap' || $arg eq '--bind'
-                 || $arg eq '--bind-ro'     || $arg eq '--allow-host'
-                 || $arg eq '--net-filter'  || $arg eq '--no-net-filter'
-                 || $arg eq '--allow-subnet' || $arg eq '--agent';
+        next unless $our_flag{$arg};
         fail("$arg is an aye-buddy flag but came after the agent's arguments;\n" .
              "  move it before them, or use `--` to force it through to the agent.");
     }
