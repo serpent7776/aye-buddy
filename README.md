@@ -75,6 +75,12 @@ than being silently forwarded.
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--allow-subnet` | Keep same-subnet (LAN) hosts reachable under the filter. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
+| `--help` | Print the flag list and exit. |
+| `--version` | Print the version and exit. |
+
+`--help` and `--version` are answered before anything is set up, so they work
+outside a repository. To reach claude's own `--help`, put it after the
+separator: `aye-buddy -- --help`.
 
 Paths inside the sandbox match host paths exactly, so error messages and
 stack traces open correctly in your editor.

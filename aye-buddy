@@ -12,6 +12,8 @@ use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
 
+our $VERSION = '0.1';
+
 sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
 
@@ -23,8 +25,6 @@ sub on_path {
     }
     return 0;
 }
-
-on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
 # Supported agents. Each entry names the binary to run plus the fixed args and
 # env aye-buddy injects for it; --agent picks one (default claude).
@@ -43,6 +43,37 @@ my %AGENTS = (
         },
     },
 );
+
+sub usage {
+    my $agents = join(', ', sort keys %AGENTS);
+    print <<"USAGE";
+aye-buddy $VERSION - run a coding agent in a sandbox
+
+usage: aye-buddy [OPTION...] [--] [AGENT ARG...]
+
+Runs the agent under bwrap so the session sees only the current project, and
+filters its network egress through a bundled allowlist proxy. aye-buddy's own
+options go before the agent's arguments; `--` ends them explicitly.
+
+options:
+  --agent NAME              agent to run (supported: $agents) [default: claude]
+  --bind PATH               expose an extra host path read-write at the same
+                            path inside the sandbox (repeatable)
+  --bind-ro PATH            same, read-only (repeatable)
+  --allow-host HOST[:PORT]  add a host to the egress allowlist; without a port
+                            80 and 443 are allowed (repeatable)
+  --no-net-filter           turn off egress filtering, use the host network
+  --allow-subnet            keep same-subnet (LAN) hosts reachable
+  --allow-bwrap             let the session run bwrap itself (nested
+                            sandboxing); reduces isolation
+  --help                    show this help and exit
+  --version                 show the version and exit
+
+To reach the agent's own --help, put it after the separator:
+  aye-buddy -- --help
+USAGE
+    exit 0;
+}
 
 # Parse aye-buddy's own options off the front of @ARGV; the rest forwards to
 # claude. require_order stops at the first non-option and pass_through leaves the
@@ -70,6 +101,7 @@ my $allow_bwrap  = 0;
 my $net_filter   = 1;
 my $allow_subnet = 0;
 my $agent        = 'claude';
+my ($show_help, $show_version);
 my (@extra_rw, @extra_ro, @extra_hosts);
 my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'net-filter!'   => \$net_filter,
@@ -77,8 +109,14 @@ my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'agent=s'       => \$agent,
                'bind:s'        => \@extra_rw,
                'bind-ro:s'     => \@extra_ro,
-               'allow-host:s'  => \@extra_hosts);
+               'allow-host:s'  => \@extra_hosts,
+               'help'          => \$show_help,
+               'version'       => \$show_version);
 GetOptions(%opt_spec) or fail("invalid aye-buddy option");
+# Answer these before touching the environment, so they work on a host that
+# lacks bwrap or the agent. `aye-buddy -- --help` still reaches the agent.
+print("aye-buddy $VERSION\n"), exit 0 if $show_version;
+usage() if $show_help;
 # The flags we own, derived from the specs above so there's one source of truth.
 # A `!` spec (net-filter) also owns its --no- form.
 my %our_flag;
@@ -87,6 +125,7 @@ for my $spec (keys %opt_spec) {
     $our_flag{"--$name"} = 1;
     $our_flag{"--no-$name"} = 1 if $spec =~ /!/;
 }
+on_path('bwrap') or fail("required command not found on PATH: bwrap");
 my $agent_spec = $AGENTS{$agent}
     or fail("unknown agent: $agent (supported: " . join(', ', sort keys %AGENTS) . ")");
 on_path($agent_spec->{bin})
