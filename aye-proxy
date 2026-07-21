@@ -80,9 +80,11 @@ $SIG{PIPE} = 'IGNORE';
 # Reap children as they exit and keep a live count for the cap below. (A plain
 # SIG_IGN would auto-reap but leave nothing to count, so the cap couldn't tell
 # how many tunnels are open.)
-my %kids;
+my (%kids, %reaped);
 $SIG{CHLD} = sub {
-    while ((my $pid = waitpid(-1, WNOHANG)) > 0) { delete $kids{$pid} }
+    while ((my $pid = waitpid(-1, WNOHANG)) > 0) {
+        delete $kids{$pid} or $reaped{$pid} = 1;
+    }
 };
 
 my $srv = IO::Socket::INET->new(
@@ -107,7 +109,7 @@ while (1) {
         next;
     }
     my $pid = fork;
-    if ($pid)          { $kids{$pid} = 1; next }    # parent: keep accepting
+    if ($pid)          { delete $reaped{$pid} or $kids{$pid} = 1; next }
     if (!defined $pid) { warn "aye-proxy: fork: $!\n"; close $client; next }
     close $srv;               # child: handle one connection
     handle($client);
