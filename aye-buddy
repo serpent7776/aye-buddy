@@ -271,6 +271,12 @@ if (-f "$project_dir/.git") {
 
 my $home = $ENV{HOME} // fail("HOME is not set");
 make_path("$home/.claude");
+# A relative XDG_CACHE_HOME is invalid per the spec; ignore it
+my $xdg_cache = $ENV{XDG_CACHE_HOME};
+my $cache_dir = (defined $xdg_cache && $xdg_cache =~ m{^/} ? $xdg_cache
+                                                          : "$home/.cache") . '/aye-buddy';
+make_path($cache_dir);
+-d $cache_dir or fail("cannot create the sandbox cache dir: $cache_dir");
 my $claude_json = "$home/.claude.json";
 unless (-e $claude_json) {
     open(my $fh, '>', $claude_json) or fail("cannot create $claude_json: $!");
@@ -326,6 +332,7 @@ try_ro("$home/.claude/scripts");
 try_ro("$home/.claude/mcp.json");
 try_ro("$home/.claude/.mcp.json");
 bind_rw($claude_json);
+bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");
 try_ro("$home/.ssh/config");
@@ -353,6 +360,11 @@ push @args,
     '--setenv', 'PWD', $project_dir,
     '--setenv', 'TERM', ($ENV{TERM} // 'xterm'),
     '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8');
+# Point the toolchains that don't follow XDG at the persistent cache
+push @args,
+    '--setenv', 'npm_config_cache', "$home/.cache/npm",
+    '--setenv', 'CARGO_HOME',       "$home/.cache/cargo",
+    '--setenv', 'GOPATH',           "$home/.cache/go";
 # Agent-specific env from %AGENTS (e.g. claude's sandbox/telemetry hints). Sorted
 # so the constructed argv is deterministic for the tests.
 for my $k (sort keys %{$agent_spec->{env}}) {

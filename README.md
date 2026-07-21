@@ -96,7 +96,8 @@ stack traces open correctly in your editor.
 ## What the session can see
 
 **Read-write:** the project root (only this one), most of `~/.claude/`
-(so `--continue` and history work), and `~/.claude.json`.
+(so `--continue` and history work), `~/.claude.json`, and a cache directory
+of aye-buddy's own (see [Caches](#caches)).
 
 **Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git and
 SSH *config* (`~/.gitconfig`, `~/.ssh/config`, `~/.ssh/known_hosts`); the
@@ -113,8 +114,30 @@ env var — API tokens, cloud credentials — is cleared so it can't leak in.
 
 **Not visible at all:** `~/.ssh` private keys, `~/.aws`, `~/.config/gcloud`,
 `~/.kube`, `~/.netrc`, browser profiles, password stores, other projects,
-other users' homes, `/root`, `/var`. `$HOME` starts as an empty tmpfs;
-only the paths above are mounted in.
+other users' homes, `/root`, `/var`, and your real caches (`~/.cache`,
+`~/.cargo`, `~/.npm`). `$HOME` starts as an empty tmpfs; only the paths above
+are mounted in.
+
+## Caches
+
+`$HOME` is a tmpfs, so anything written there would live in RAM and vanish
+with the session — package caches would be re-downloaded every run. So
+`~/.cache` inside the sandbox is a real directory on disk,
+`~/.cache/aye-buddy` (or `$XDG_CACHE_HOME/aye-buddy`), shared by every
+session. `CARGO_HOME`, `GOPATH` and npm's cache point into it too, since
+those tools ignore `XDG_CACHE_HOME`.
+
+Only that one subdirectory is mounted; the rest of your `~/.cache` stays
+invisible, along with `~/.cargo` and `~/.npm`. That's deliberate. `~/.cargo`
+is not a cache directory — it holds `bin/` (usually on your `$PATH`),
+`config.toml` (which can run commands on the next build) and
+`credentials.toml` (your registry token). `~/.cache` holds other
+applications' data, browser caches included. And host-side tools *trust*
+their caches, so a writable bind would let a session poison a build you run
+later outside the sandbox.
+
+It's an ordinary cache: delete it whenever you like. Sandboxed projects share
+it, so it is not an isolation boundary between them.
 
 ## Network filtering
 

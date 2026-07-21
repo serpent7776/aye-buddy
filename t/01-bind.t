@@ -66,4 +66,23 @@ subtest 'repeated --bind flags all reach bwrap' => sub {
     ok +(grep { $_->[0] eq '/usr' } @b), '/usr bound';
 };
 
+subtest 'caches persist in our own dir, not the host ones' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my @b = bwrap_binds($r->{argv}, '--bind');
+    my ($cache) = grep { $_->[1] =~ m{/\.cache\z} } @b;
+    ok $cache, 'something is mounted at $HOME/.cache';
+    like $cache->[0], qr{/\.cache/aye-buddy\z}, 'backed by our own subdir';
+    isnt $cache->[0], $cache->[1], 'the host ~/.cache itself is not the source';
+
+    # The toolchains that ignore XDG_CACHE_HOME are pointed at it explicitly.
+    my %env = do {
+        my @a = @{$r->{argv}};
+        map { $a[$_ + 1] => $a[$_ + 2] } grep { $a[$_] eq '--setenv' } 0 .. $#a - 2;
+    };
+    like $env{npm_config_cache}, qr{/\.cache/npm\z}, 'npm cache redirected';
+    like $env{CARGO_HOME},       qr{/\.cache/cargo\z}, 'cargo home redirected';
+    like $env{GOPATH},           qr{/\.cache/go\z}, 'GOPATH redirected';
+};
+
 done_testing;
