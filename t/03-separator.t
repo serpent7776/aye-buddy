@@ -26,6 +26,22 @@ subtest 'misplaced --bind after claude args fails loudly' => sub {
     like $r->{err}, qr/came after the agent's arguments/;
 };
 
+subtest 'misplaced --flag=VALUE is caught like the spaced form' => sub {
+    # --bind=/tmp works when it comes first, so it must not silently vanish into
+    # claude's args when it comes last.
+    my $r = run_aye('-p', 'hi', '--bind=/tmp');
+    is $r->{exit}, 1;
+    like $r->{err}, qr/came after the agent's arguments/;
+    like $r->{err}, qr{\Qaye-buddy: --bind=/tmp\E}, 'quotes back what was typed';
+};
+
+subtest '-- forces a literal --flag=VALUE through to claude' => sub {
+    my $r = run_aye('--', '--bind=/tmp');
+    is $r->{exit}, 0;
+    my @p = payload($r->{argv});
+    ok +(grep { $_ eq '--bind=/tmp' } @p), 'reaches claude verbatim';
+};
+
 subtest '-- forces a literal --allow-bwrap through to claude' => sub {
     my $r = run_aye('--', '--allow-bwrap');
     is $r->{exit}, 0, 'exits 0';

@@ -137,7 +137,9 @@ my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
 # misplaced flag, not a claude one: fail loudly rather than forward it silently.
 if (!$saw_sep) {
     for my $arg (@ARGV) {
-        next unless $our_flag{$arg};
+        # --bind=PATH is as much ours as --bind PATH, so match on the name only.
+        (my $flag = $arg) =~ s/=.*//s;
+        next unless $our_flag{$flag};
         fail("$arg is an aye-buddy flag but came after the agent's arguments;\n" .
              "  move it before them, or use `--` to force it through to the agent.");
     }
