@@ -182,7 +182,6 @@ my @default_allow_hosts = (
     'api.anthropic.com',
     'platform.claude.com',
     'console.anthropic.com',
-    'sentry.io',
     # npm
     'registry.npmjs.org',
     # PyPI
