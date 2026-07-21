@@ -2,7 +2,18 @@ use strict;
 use warnings;
 use Test2::V0;
 use IO::Socket::INET;
+use Socket qw(SOL_SOCKET SO_RCVTIMEO);
 use Cwd qw(abs_path);
+
+# Bound blocking reads on $s, so a tunnel that swallows bytes fails the test
+# instead of hanging the suite. Done at the socket, not with select(): buffered
+# readline can already hold data the socket itself no longer reports as ready.
+sub set_read_timeout {
+    my ($s, $secs) = @_;
+    setsockopt($s, SOL_SOCKET, SO_RCVTIMEO, pack('l!l!', $secs, 0))
+        or die "SO_RCVTIMEO: $!";
+    return;
+}
 
 # aye-proxy is testable without a sandbox: it's just a loopback CONNECT proxy,
 # so we exercise its allow/deny decisions directly. No bwrap, no netns needed.
@@ -71,6 +82,23 @@ subtest 'allowlisted host:port tunnels through' => sub {
     is <$s>, "HELLO\n", 'origin banner reaches the client';
     print $s "PING\n";
     is <$s>, "ECHO:PING\n", 'bytes flow back through the tunnel';
+    close $s;
+};
+
+subtest 'bytes pipelined behind the CONNECT reach the origin' => sub {
+    # A client that doesn't wait for the 200 lands its first payload in the same
+    # read as the request line. Those bytes belong to the tunnel, not the header:
+    # dropping them strands the peer waiting for a handshake that never arrives.
+    my $pport = start_proxy("127.0.0.1:$origin");
+    my $s = IO::Socket::INET->new(PeerHost => '127.0.0.1', PeerPort => $pport,
+        Proto => 'tcp') or die "dial proxy: $!";
+    $s->autoflush(1);
+    set_read_timeout($s, 5);
+    print $s "CONNECT 127.0.0.1:$origin HTTP/1.1\r\nHost: x\r\n\r\nPING\n";
+    like scalar(<$s>), qr{^HTTP/1\.1 200 }, 'CONNECT established';
+    my $blank = <$s>;    # consume the header terminator
+    is <$s>, "HELLO\n", 'origin banner reaches the client';
+    is <$s>, "ECHO:PING\n", 'the pipelined line was forwarded';
     close $s;
 };
 

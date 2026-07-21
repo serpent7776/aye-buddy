@@ -118,26 +118,8 @@ sub handle {
     my ($client) = @_;
     $client->autoflush(1);
 
-    # Read the request line + headers (until the blank line). Bounded by a read
-    # timeout so a client that connects and dribbles (or never sends) can't pin
-    # the child forever — the slowloris case.
-    my $csel = IO::Select->new($client);
-    my $head = '';
-    while ($head !~ /\r?\n\r?\n/) {
-        return reply($client, 408, 'Request Timeout') unless $csel->can_read($HEADER_TIMEOUT);
-        my $n = sysread($client, my $buf, 4096);
-        last unless $n;
-        $head .= $buf;
-        return reply($client, 400, 'Bad Request') if length $head > 65536;
-    }
-    my ($line) = split /\r?\n/, $head, 2;
-    $line //= '';
-
-    # CONNECT host:port HTTP/1.x — the only verb we serve. Plain-HTTP proxying
-    # is intentionally unsupported: the allowlisted hosts are all HTTPS, and
-    # deny-by-default is the safe posture.
-    my ($host, $dport) = $line =~ m{\ACONNECT\s+([^\s:]+):([0-9]+)\s}i;
-    return reply($client, 405, 'Method Not Allowed') unless defined $host;
+    my ($host, $dport, $rest) = read_connect_request($client);
+    return unless defined $host;
 
     unless (connect_allowed($host, $dport)) {
         warn "aye-proxy: DENY ", ascii_sanitise("$host:$dport"), "\n";
@@ -152,7 +134,60 @@ sub handle {
     $origin->autoflush(1);
     print $client "HTTP/1.1 200 Connection established\r\n\r\n";
 
+    # Hand the tunnel whatever the client pipelined behind its CONNECT before
+    # pump() takes over, or those bytes are lost.
+    if (length $rest && !write_all($origin, $rest)) {
+        close $client; close $origin;
+        return;
+    }
     pump($client, $origin);
+}
+
+# Read the CONNECT request line and headers from $client. Returns
+# (host, port, leftover), where leftover is any bytes the client sent after the
+# blank line: TCP has no message boundaries, so a client that doesn't wait for
+# our 200 lands its first tunnel payload in the same read as the request, and
+# dropping it strands the peer on a handshake that never completes.
+# Returns () after replying with an error if the request never arrives, is
+# oversized, or isn't a CONNECT.
+sub read_connect_request {
+    my ($client) = @_;
+    # Bounded by a read timeout so a client that connects and dribbles (or never
+    # sends) can't pin the child forever — the slowloris case.
+    my $csel = IO::Select->new($client);
+    my $buf = '';
+    while ($buf !~ /\r?\n\r?\n/) {
+        return reply($client, 408, 'Request Timeout') unless $csel->can_read($HEADER_TIMEOUT);
+        my $n = sysread($client, my $chunk, 4096);
+        last unless $n;
+        $buf .= $chunk;
+        return reply($client, 400, 'Bad Request') if length $buf > 65536;
+    }
+    # Split at the header terminator. No match means the client hung up early;
+    # the request-line check below then rejects it.
+    my ($head, $rest) = $buf =~ /\A(.*?\r?\n\r?\n)(.*)\z/s ? ($1, $2) : ($buf, '');
+
+    my ($line) = split /\r?\n/, $head, 2;
+    $line //= '';
+    # CONNECT host:port HTTP/1.x — the only verb we serve. Plain-HTTP proxying
+    # is intentionally unsupported: the allowlisted hosts are all HTTPS, and
+    # deny-by-default is the safe posture.
+    my ($host, $dport) = $line =~ m{\ACONNECT\s+([^\s:]+):([0-9]+)\s}i;
+    return reply($client, 405, 'Method Not Allowed') unless defined $host;
+    return ($host, $dport, $rest);
+}
+
+# syswrite can come up short; loop until the whole buffer is out. Returns false
+# if the peer went away mid-write.
+sub write_all {
+    my ($fh, $buf) = @_;
+    my ($off, $len) = (0, length $buf);
+    while ($off < $len) {
+        my $w = syswrite($fh, $buf, $len - $off, $off);
+        return 0 unless $w;
+        $off += $w;
+    }
+    return 1;
 }
 
 sub reply {
@@ -173,13 +208,8 @@ sub pump {
             my $to = $from == $a ? $b : $a;
             my $n = sysread($from, my $buf, 65536);
             if (!$n) { close $a; close $b; return }
-            my $off = 0;
-            while ($off < $n) {
-                my $w = syswrite($to, $buf, $n - $off, $off);
-                # Write failed (peer gone): tear down rather than drop bytes.
-                if (!$w) { close $a; close $b; return }
-                $off += $w;
-            }
+            # Write failed (peer gone): tear down rather than drop bytes.
+            if (!write_all($to, $buf)) { close $a; close $b; return }
         }
     }
     close $a; close $b;    # can_read returned empty: idle timeout
