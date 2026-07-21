@@ -33,11 +33,19 @@ The network layer is egress *control*, not *prevention* — see
 
 ## Requirements
 
+- `perl` (core modules only — nothing from CPAN)
 - `bwrap` (bubblewrap)
 - `claude` (Claude Code CLI)
-- `pasta` (from `passt`) — only for the network filter; skip it with
-  `--no-net-filter`
 - a `git` or `jj` repository (the wrapper refuses to run outside one)
+
+For the network filter, which is on by default — `--no-net-filter` needs none
+of these:
+
+- `pasta` (from `passt`)
+- `ip` (from `iproute2`)
+- `nft` (from `nftables`) — optional. Without it the egress seal still holds,
+  but the host-loopback and IPv6 side channels stay reachable; the session
+  warns and carries on.
 
 ## Install
 

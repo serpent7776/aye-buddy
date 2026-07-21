@@ -34,7 +34,8 @@ sub _stub {
 #   exit    : exit status (0 on a successful exec of the stub)
 #   argv    : the stub bwrap's argv as an arrayref (aye-buddy's constructed call)
 # An optional leading hashref sets options; { no_repo => 1 } omits the .git marker
-# so the run happens outside any repo.
+# so the run happens outside any repo, { no_ip => 1 } drops the ip stub so the
+# net-filter dependency check can be exercised.
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
@@ -50,6 +51,9 @@ sub run_aye {
     _stub("$root/bin/bwrap", 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/pasta", 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/claude", 'exit 0;');
+    # Only aye-buddy's presence check looks for ip; the stub pasta never runs
+    # aye-net-helper, which is what would actually call it.
+    _stub("$root/bin/ip", 'exit 0;') unless $opts->{no_ip};
 
     my $outf = "$root/out";
     my $errf = "$root/err";

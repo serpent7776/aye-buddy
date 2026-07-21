@@ -55,6 +55,15 @@ subtest 'routing tightens by default; --allow-subnet opts out' => sub {
         '--allow-subnet does not leak into the claude payload';
 };
 
+subtest 'a missing ip is caught up front, and only when filtering' => sub {
+    my $r = run_aye({ no_ip => 1 });
+    is $r->{exit}, 1, 'refuses to launch';
+    like $r->{err}, qr/needs ip \(iproute2\)/, 'names the package, not a route error';
+
+    my $off = run_aye({ no_ip => 1 }, '--no-net-filter');
+    is $off->{exit}, 0, '--no-net-filter does not need ip';
+};
+
 subtest '--no-net-filter after claude args is a misplaced-flag error' => sub {
     my $r = run_aye('-p', 'hi', '--no-net-filter');
     is $r->{exit}, 1;

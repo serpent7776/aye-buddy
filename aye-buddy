@@ -209,10 +209,10 @@ my $ll_helper    = "$self_dir/ll-helper";
 my $proxy_helper = "$self_dir/aye-proxy";
 my $net_helper   = "$self_dir/aye-net-helper";
 
-# Egress filtering needs pasta (userspace uplink) and the two bundled helpers.
-# Fail early with a clear message rather than deep inside the launch chain.
+# Check egress filtering requirements
 if ($net_filter) {
     on_path('pasta') or fail("--net-filter needs pasta (passt); install it or pass --no-net-filter");
+    on_path('ip')    or fail("--net-filter needs ip (iproute2); install it or pass --no-net-filter");
     -r $proxy_helper or fail("egress proxy not found: $proxy_helper");
     -r $net_helper   or fail("egress net helper not found: $net_helper");
 }
