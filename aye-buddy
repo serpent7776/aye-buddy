@@ -11,6 +11,7 @@ use lib $RealBin;
 use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
 use File::Path qw(make_path);
 use File::Basename qw(dirname);
+use File::Temp ();
 
 our $VERSION = '0.1';
 
@@ -521,10 +522,15 @@ unless ($net_filter) {
 #    proxy's diagnostics (blocked hosts) go to a log file, NOT the shared
 #    terminal — otherwise they'd scribble over claude's TUI. The log is removed
 #    on exit; AYE_BUDDY_DEBUG prints its path and keeps it for inspection.
-my $tmpdir = $ENV{TMPDIR} // '/tmp';
-my $logdir = "$tmpdir/aye-buddy";
-eval { make_path($logdir, { mode => 0700 }) };  ## no critic (ProhibitLeadingZeros)
-$logdir = $tmpdir unless -d $logdir;    # fall back to TMPDIR if the dir failed
+my $logdir;
+my $rundir = $ENV{XDG_RUNTIME_DIR};
+if (defined $rundir && $rundir =~ m{^/} && -d $rundir && -o _) {
+    my $dir = "$rundir/aye-buddy";
+    eval { make_path($dir, { mode => 0700 }) };  ## no critic (ProhibitLeadingZeros)
+    $logdir = $dir if -d $dir && -o _;
+}
+$logdir //= eval { File::Temp::tempdir('aye-buddy.XXXXXX', TMPDIR => 1) }
+    // fail("cannot create a private log dir: " . ($@ =~ s/\s+\z//r));
 my $proxy_log = "$logdir/aye-proxy.$$.log";
 my $pasta_log = "$logdir/aye-pasta.$$.log";
 if ($ENV{AYE_BUDDY_DEBUG}) {
@@ -547,7 +553,7 @@ close $proxy_rd;
 my ($proxy_port) = ($port_line // '') =~ /port=(\d+)/;
 unless ($proxy_port) {
     kill 'TERM', $proxy_pid;
-    unlink $proxy_log, $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
+    unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
     fail("aye-proxy did not report a listening port");
 }
 
@@ -577,5 +583,7 @@ my $status = $?;
 kill 'TERM', $proxy_pid;
 waitpid($proxy_pid, 0);
 # Drop the helper logs on a clean exit; keep them under debug for inspection.
-unlink $proxy_log, $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
+# The rmdir is best-effort: it fails harmlessly while other sessions' logs
+# share the runtime dir.
+unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
 exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
