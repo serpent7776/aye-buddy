@@ -7,7 +7,7 @@ use AyeTest;
 subtest '--version prints the version and exits 0' => sub {
     my $r = run_aye('--version');
     is $r->{exit}, 0;
-    like $r->{out}, qr/\Aaye-buddy [0-9]+\.[0-9]+\n\z/, 'just the version line';
+    like $r->{out}, qr/\Aaye-buddy [0-9]+\.[0-9]+(?:\.[0-9]+)?\n\z/, 'just the version line';
 };
 
 subtest '--help prints usage and exits 0' => sub {

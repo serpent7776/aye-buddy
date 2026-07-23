@@ -13,7 +13,7 @@ use File::Path qw(make_path);
 use File::Basename qw(dirname);
 use File::Temp ();
 
-our $VERSION = '0.1';
+our $VERSION = '0.1.0';
 
 sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
