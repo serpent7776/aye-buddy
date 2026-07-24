@@ -53,9 +53,10 @@ of these:
 make install
 ```
 
-Copies `aye-buddy` and its helpers onto your `$PATH`, then offers to add a
-`claude` shell function that forwards to it (so typing `claude` runs the
-sandboxed version; `command claude` still reaches the real binary).
+Installs `aye-buddy` and its helpers into `libexec/aye-buddy` and symlinks
+the script onto your `$PATH`, then offers to add a `claude` shell function
+that forwards to it (so typing `claude` runs the sandboxed version;
+`command claude` still reaches the real binary).
 
 `make uninstall` reverses it (for bash/zsh you remove the shell-function
 block by hand — the installer prints where).

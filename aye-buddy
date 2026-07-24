@@ -204,8 +204,6 @@ my @allow_hosts = (@default_allow_hosts, @extra_hosts);
 print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
     if $ENV{AYE_BUDDY_DEBUG};
 
-# $RealBin is this script's symlink-resolved directory (dirname(readlink -f "$0")).
-# The helpers live next to the installed script.
 my $self_dir     = $RealBin;
 my $ll_helper    = "$self_dir/ll-helper";
 my $proxy_helper = "$self_dir/aye-proxy";

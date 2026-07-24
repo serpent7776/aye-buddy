@@ -21,11 +21,10 @@ for d in "$HOME/.local/bin" "$HOME/bin"; do
 done
 : "${BINDIR:=$HOME/.local/bin}"
 
-install -d "$BINDIR"
-install -m 0755 "$SRC_DIR/$SCRIPT" "$BINDIR/$SCRIPT"
-printf 'installed %s -> %s\n' "$SCRIPT" "$BINDIR/$SCRIPT"
+LIBEXEC=$HOME/.local/libexec/aye-buddy
+install -d "$LIBEXEC"
 
-for f in AyeSeccomp.pm ll-helper aye-proxy aye-net-helper filter.bpf filter-nested.bpf; do
+for f in "$SCRIPT" AyeSeccomp.pm ll-helper aye-proxy aye-net-helper filter.bpf filter-nested.bpf; do
     if [ ! -f "$SRC_DIR/$f" ]; then
         msg="install.sh: required $SRC_DIR/$f not found"
         case "$f" in *.bpf) msg="$msg (run \`make seccomp\` to build it)" ;; esac
@@ -36,9 +35,13 @@ for f in AyeSeccomp.pm ll-helper aye-proxy aye-net-helper filter.bpf filter-nest
         *.bpf|*.pm) mode=0644 ;;
         *)          mode=0755 ;;
     esac
-    install -m "$mode" "$SRC_DIR/$f" "$BINDIR/$f"
-    printf 'installed %s -> %s\n' "$f" "$BINDIR/$f"
+    install -m "$mode" "$SRC_DIR/$f" "$LIBEXEC/$f"
+    printf 'installed %s -> %s\n' "$f" "$LIBEXEC/$f"
 done
+
+install -d "$BINDIR"
+ln -sf "$LIBEXEC/$SCRIPT" "$BINDIR/$SCRIPT"
+printf 'linked %s -> %s\n' "$BINDIR/$SCRIPT" "$LIBEXEC/$SCRIPT"
 
 case ":$PATH:" in
     *":$BINDIR:"*) ;;
