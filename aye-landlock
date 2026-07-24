@@ -1,8 +1,8 @@
 #!/usr/bin/env perl
-# ll-helper: apply a Landlock filesystem ruleset to the calling process, then
+# aye-landlock: apply a Landlock filesystem ruleset to the calling process, then
 # exec the command passed as arguments. Meant to run as bwrap's *payload* —
 #
-#     bwrap <namespace+mount setup> -- perl ll-helper -- claude <args...>
+#     bwrap <namespace+mount setup> -- perl aye-landlock -- claude <args...>
 #
 # so the ruleset lands on the already-constructed sandbox view and is inherited
 # (Landlock rules can only tighten, survive execve, and travel across namespace
@@ -68,7 +68,7 @@ use constant {
     A_IOCTL_DEV   => 1 << 15,  # ABI >= 5
 };
 
-sub note { warn "ll-helper: $_[0]\n" }
+sub note { warn "aye-landlock: $_[0]\n" }
 
 sub split_paths {
     my ($v) = @_;
@@ -79,7 +79,7 @@ sub split_paths {
 # The command to exec is everything after an optional "--" separator.
 my @cmd = @ARGV;
 shift @cmd if @cmd && $cmd[0] eq '--';
-die "ll-helper: no command to exec\n" unless @cmd;
+die "aye-landlock: no command to exec\n" unless @cmd;
 
 # Read our configuration, then scrub it from the environment so it does not
 # leak into the sandboxed process. (Must read BEFORE deleting.)
@@ -113,7 +113,7 @@ sub add_path {
     my $rule = pack('Q l', $access, $fd);
     my $r = syscall(SYS_landlock_add_rule, $ruleset_fd,
                     LANDLOCK_RULE_PATH_BENEATH, $rule, 0);
-    die "ll-helper: landlock_add_rule($path): $!\n" if $r < 0;
+    die "aye-landlock: landlock_add_rule($path): $!\n" if $r < 0;
     # $fh closes here (O_CLOEXEC); the rule already captured the inode.
 }
 
@@ -124,7 +124,7 @@ sub apply_landlock {
                       LANDLOCK_CREATE_RULESET_VERSION);
     if ($abi < 0) {
         return 0 if $!{ENOSYS} || $!{EOPNOTSUPP};   # not available — degrade
-        die "ll-helper: landlock_create_ruleset(version): $!\n";
+        die "aye-landlock: landlock_create_ruleset(version): $!\n";
     }
     note "Landlock ABI $abi" if $verbose;
 
@@ -146,7 +146,7 @@ sub apply_landlock {
     # ABI-v4 network field we don't use), which is valid on every ABI.
     my $attr = pack('Q', $supported);
     my $rfd  = syscall(SYS_landlock_create_ruleset, $attr, length($attr), 0);
-    die "ll-helper: landlock_create_ruleset: $!\n" if $rfd < 0;
+    die "aye-landlock: landlock_create_ruleset: $!\n" if $rfd < 0;
 
     add_path($rfd, $_, $rw_access) for @rw;
     add_path($rfd, $_, $ro_access) for @ro;
@@ -154,7 +154,7 @@ sub apply_landlock {
     # Relies on no_new_privs, which bwrap sets on the payload. If it were
     # missing this returns EPERM and we fail closed rather than exec unprotected.
     my $r = syscall(SYS_landlock_restrict_self, $rfd, 0);
-    die "ll-helper: landlock_restrict_self: $!\n" if $r < 0;
+    die "aye-landlock: landlock_restrict_self: $!\n" if $r < 0;
     note "Landlock enforced (" . scalar(@rw) . " rw, " . scalar(@ro) . " ro paths)"
         if $verbose;
     return 1;
@@ -162,9 +162,9 @@ sub apply_landlock {
 
 unless (apply_landlock()) {
     my $msg = "Landlock unavailable — bwrap namespaces remain in effect";
-    die "ll-helper: $msg; refusing (LL_STRICT set)\n" if $strict;
+    die "aye-landlock: $msg; refusing (LL_STRICT set)\n" if $strict;
     note $msg;
 }
 
 exec { $cmd[0] } @cmd;
-die "ll-helper: exec $cmd[0]: $!\n";
+die "aye-landlock: exec $cmd[0]: $!\n";

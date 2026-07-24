@@ -5,7 +5,7 @@ use lib 't/lib';
 use AyeTest;
 
 # Egress filtering is on by default: aye-buddy execs `pasta`, whose argv nests
-# `aye-net-helper ... -- bwrap <args>`. The stub pasta dumps that argv, so we
+# `aye-netns-seal ... -- bwrap <args>`. The stub pasta dumps that argv, so we
 # assert on the constructed launch. (The real aye-proxy starts on the host to
 # hand out a port; it is torn down when the stub pasta exits.)
 sub has { my ($r, $tok) = @_; scalar grep { $_ eq $tok } @{$r->{argv}} }
@@ -17,7 +17,7 @@ subtest 'default: sandbox runs under pasta with proxy env, no --share-net' => su
     ok !has($r, '--ipv4-only'), 'pasta keeps dual-stack; IPv6 is sealed at the routes, not here';
     ok has($r, '--quiet'), 'pasta quieted so its notes stay off the TUI';
     ok has($r, 'bwrap'), 'bwrap nested in the launch chain';
-    ok +(grep { m{aye-net-helper} } @{$r->{argv}}), 'aye-net-helper in the chain';
+    ok +(grep { m{aye-netns-seal} } @{$r->{argv}}), 'aye-netns-seal in the chain';
     ok has($r, '@@AYE_PROXY@@'), 'proxy URL placeholder is set for the helper';
     ok has($r, '--uid'), 'sandbox uid pinned to the real user (not pasta uid 0)';
     my ($i) = grep { $r->{argv}[$_] eq '--uid' } 0 .. $#{$r->{argv}};
@@ -44,7 +44,7 @@ subtest 'routing tightens by default; --allow-subnet opts out' => sub {
     my $loose = run_aye('--allow-subnet');
     is $loose->{exit}, 0, 'exits 0';
     ok has($loose, '--allow-subnet'),
-        '--allow-subnet is forwarded to aye-net-helper';
+        '--allow-subnet is forwarded to aye-netns-seal';
     # and it stays an aye-buddy flag, not a claude one
     my @after_claude = do {
         my @a = @{$loose->{argv}};

@@ -10,7 +10,7 @@ use Fcntl qw(F_GETFD FD_CLOEXEC);
 
 # The seccomp blob rides on an inherited fd. aye-buddy bakes a placeholder into
 # the bwrap argv; whichever process execs bwrap (aye-buddy directly, or
-# aye-net-helper under pasta) arms the blob and rewrites the token to its own fd.
+# aye-netns-seal under pasta) arms the blob and rewrites the token to its own fd.
 # Both scripts share the arm_seccomp/SECCOMP_FD_TOKEN implementation here.
 
 # The value following a flag in a captured argv.
@@ -54,12 +54,12 @@ subtest '--no-net-filter: aye-buddy arms the blob and splices a real fd' => sub 
     ok !(grep { $_ eq SECCOMP_FD_TOKEN } @{$r->{argv}}), 'no placeholder left behind';
 };
 
-subtest 'default: placeholder rides through to aye-net-helper' => sub {
+subtest 'default: placeholder rides through to aye-netns-seal' => sub {
     my $r = run_aye();
     is $r->{exit}, 0, 'exits 0';
     is after($r->{argv}, '--seccomp'), SECCOMP_FD_TOKEN,
         'aye-buddy leaves the token for the netns-side helper to arm';
-    ok +(grep { m{aye-net-helper} } @{$r->{argv}}), 'helper is in the chain to do it';
+    ok +(grep { m{aye-netns-seal} } @{$r->{argv}}), 'helper is in the chain to do it';
 };
 
 done_testing;

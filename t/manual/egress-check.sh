@@ -3,7 +3,7 @@
 #
 # This is NOT run by `make test`: it needs unprivileged user+net namespaces,
 # which don't exist in every CI/sandbox. It drives the SAME artifacts aye-buddy
-# ships — aye-proxy (allowlist) and aye-net-helper (route restriction inside
+# ships — aye-proxy (allowlist) and aye-netns-seal (route restriction inside
 # pasta's netns) — WITHOUT bwrap, so a failure points at the plumbing, not the
 # file sandbox.
 #
@@ -16,12 +16,12 @@
 # get a 403, and raw off-subnet egress (reverse-shell path) must be blocked.
 #
 # Usage:  t/manual/egress-check.sh
-# Needs:  pasta, curl, ip, nft, timeout, perl, and aye-proxy + aye-net-helper.
+# Needs:  pasta, curl, ip, nft, timeout, perl, and aye-proxy + aye-netns-seal.
 set -u
 
 here=$(cd "$(dirname "$0")/../.." && pwd)
 proxy_bin="$here/aye-proxy"
-net_helper="$here/aye-net-helper"
+netns_seal="$here/aye-netns-seal"
 
 ALLOWED_HOST=${ALLOWED_HOST:-example.com}      # on the allowlist
 DENIED_HOST=${DENIED_HOST:-cloudflare.com}     # deliberately not
@@ -31,7 +31,7 @@ BLOCKHOLE_V6=${BLOCKHOLE_V6:-2606:4700:4700::1111}  # IPv6 raw-egress probe
 command -v pasta  >/dev/null || { echo "SKIP: pasta not installed"; exit 2; }
 command -v curl   >/dev/null || { echo "SKIP: curl not installed";  exit 2; }
 [ -x "$proxy_bin" ]          || { echo "SKIP: $proxy_bin not found"; exit 2; }
-[ -f "$net_helper" ]         || { echo "SKIP: $net_helper not found"; exit 2; }
+[ -f "$netns_seal" ]         || { echo "SKIP: $netns_seal not found"; exit 2; }
 
 # Start aye-proxy on the host (it has real network; the netns will not).
 proxy_out=$(mktemp)
@@ -63,7 +63,7 @@ DECOY_PORT=$(sed -n 's/^port=//p' "$decoy_out")
 [ -n "$DECOY_PORT" ] || { echo "FAIL: decoy did not report a port"; cat "$decoy_out"; exit 1; }
 echo "decoy host-loopback service on 127.0.0.1:$DECOY_PORT (must stay unreachable)"
 
-# Assertions run inside the namespace. aye-net-helper (spawned by pasta) has
+# Assertions run inside the namespace. aye-netns-seal (spawned by pasta) has
 # already restricted the route and exported HTTP(S)_PROXY; here we just probe.
 # EXPECT_LAN ("blocked"/"reachable") is the mode-specific expectation for a
 # same-subnet host. Vars flow through pasta -> helper -> bash.
@@ -118,17 +118,17 @@ status=0
 
 echo; echo "=== mode: tight (default) — only the proxy is reachable ==="
 EXPECT_LAN=blocked pasta --config-net -- \
-    "$net_helper" "$PROXY_PORT" - -- bash -c "$inner" || status=1
+    "$netns_seal" "$PROXY_PORT" - -- bash -c "$inner" || status=1
 
 echo; echo "=== mode: --allow-subnet — LAN stays reachable (fallback) ==="
 EXPECT_LAN=reachable pasta --config-net -- \
-    "$net_helper" "$PROXY_PORT" - --allow-subnet -- bash -c "$inner" || status=1
+    "$netns_seal" "$PROXY_PORT" - --allow-subnet -- bash -c "$inner" || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
     echo "RESULT: egress mechanism verified — tight mode blocks the LAN, --allow-subnet keeps it."
 else
-    echo "RESULT: FAILED (exit $status). If only the tight-mode LAN check failed, aye-net-helper"
+    echo "RESULT: FAILED (exit $status). If only the tight-mode LAN check failed, aye-netns-seal"
     echo "        may have auto-reverted (look for its warning above) — the /32 gateway route"
     echo "        did not hold on this host; --allow-subnet is the fallback."
 fi

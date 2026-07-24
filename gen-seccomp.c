@@ -10,7 +10,7 @@
  * agent spawns arbitrary toolchains, so a strict allowlist would SIGSYS
  * something eventually; a denylist removes the high-risk / escape-relevant
  * syscalls while leaving normal operation untouched. This is the syscall-axis
- * companion to the Landlock filesystem ruleset (see ll-helper): Landlock
+ * companion to the Landlock filesystem ruleset (see aye-landlock): Landlock
  * guards which inodes can be opened; seccomp guards which kernel entry points
  * can be called at all — i.e. it protects the sandbox's own integrity by
  * denying the primitives an escape would use.

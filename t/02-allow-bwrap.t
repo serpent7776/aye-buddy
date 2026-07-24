@@ -25,12 +25,12 @@ subtest '--allow-bwrap disables Landlock (payload not perl-wrapped)' => sub {
     my $plain   = run_aye();
     my $relaxed = run_aye('--allow-bwrap');
 
-    # With Landlock on, the payload is `perl <ll_dest> -- claude ...`.
+    # With Landlock on, the payload is `perl <landlock_dest> -- claude ...`.
     # With --allow-bwrap, Landlock is dropped, so claude is invoked directly.
-    ok +(grep { m{aye-buddy-ll-helper} } @{$plain->{argv}}),
-        'default: ll-helper wraps the payload';
-    ok !(grep { m{aye-buddy-ll-helper} } @{$relaxed->{argv}}),
-        '--allow-bwrap: no ll-helper wrapper';
+    ok +(grep { m{aye-buddy-landlock} } @{$plain->{argv}}),
+        'default: aye-landlock wraps the payload';
+    ok !(grep { m{aye-buddy-landlock} } @{$relaxed->{argv}}),
+        '--allow-bwrap: no aye-landlock wrapper';
 
     # Either way the LL_RW/LL_RO env is only set when Landlock is on.
     ok +(grep { $_ eq 'LL_RW' } @{$plain->{argv}}),   'default sets LL_RW';

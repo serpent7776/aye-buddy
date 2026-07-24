@@ -7,14 +7,14 @@ use Cwd qw(abs_path);
 use POSIX qw(dup2);
 use IO::Socket::INET ();
 
-# Drive aye-net-helper directly — the netns-side script 08-net-filter never
+# Drive aye-netns-seal directly — the netns-side script 08-net-filter never
 # exercises, only asserts aye-buddy assembles. Root and a real netns aren't
 # available here, so `ip`/`nft` are PATH stubs: a stateful stub `ip` that
 # records every call and lets `route del default` actually clear the state
 # `route show default` reads back (so the egress seal can genuinely pass or
 # fail), and a real loopback listener stands in for the reachable proxy.
-my $HELPER = abs_path(__FILE__ . '/../../aye-net-helper')
-    or die "cannot locate aye-net-helper";
+my $HELPER = abs_path(__FILE__ . '/../../aye-netns-seal')
+    or die "cannot locate aye-netns-seal";
 
 # A parked listener == the proxy is reachable; connects land in its backlog
 # (never accepted, which is fine — the handshake completes regardless).

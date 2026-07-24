@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# aye-net-helper: the netns-side of aye-buddy's egress filtering.
+# aye-netns-seal: aye-buddy's egress seal, run inside the net namespace.
 #
 # pasta spawns this inside the fresh user+net namespace (so it runs as root in
 # that userns, with CAP_NET_ADMIN over the netns) BEFORE bwrap. It:
@@ -30,15 +30,15 @@ use lib $RealBin;
 use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
 use IO::Socket::INET ();
 
-sub die_h { print STDERR "aye-net-helper: $_[0]\n"; exit 1 }
-sub warn_h { print STDERR "aye-net-helper: $_[0]\n" }
+sub die_h { print STDERR "aye-netns-seal: $_[0]\n"; exit 1 }
+sub warn_h { print STDERR "aye-netns-seal: $_[0]\n" }
 
 # A real TCP port. An out-of-range value would reach nft as `tcp dport N` and
 # fail the whole ruleset, silently dropping the loopback/IPv6 hardening.
 sub valid_port { $_[0] =~ /\A[0-9]+\z/ && $_[0] >= 1 && $_[0] <= 65535 }
 
 # argv: PROXY_PORT  SECCOMP(-|path)  [--allow-subnet]  --  CMD [ARG...]
-my $port    = shift // die_h('usage: aye-net-helper PORT SECCOMP [--allow-subnet] -- CMD...');
+my $port    = shift // die_h('usage: aye-netns-seal PORT SECCOMP [--allow-subnet] -- CMD...');
 valid_port($port) or die_h("proxy port '$port' not a valid TCP port (1-65535)");
 my $seccomp = shift // die_h('missing SECCOMP argument (path or -)');
 my $allow_subnet = 0;

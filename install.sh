@@ -24,7 +24,7 @@ done
 LIBEXEC=$HOME/.local/libexec/aye-buddy
 install -d "$LIBEXEC"
 
-for f in "$SCRIPT" AyeSeccomp.pm ll-helper aye-proxy aye-net-helper filter.bpf filter-nested.bpf; do
+for f in "$SCRIPT" AyeSeccomp.pm aye-landlock aye-proxy aye-netns-seal filter.bpf filter-nested.bpf; do
     if [ ! -f "$SRC_DIR/$f" ]; then
         msg="install.sh: required $SRC_DIR/$f not found"
         case "$f" in *.bpf) msg="$msg (run \`make seccomp\` to build it)" ;; esac

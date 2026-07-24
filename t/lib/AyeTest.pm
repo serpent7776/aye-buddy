@@ -52,7 +52,7 @@ sub run_aye {
     _stub("$root/bin/pasta", 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/claude", 'exit 0;');
     # Only aye-buddy's presence check looks for ip; the stub pasta never runs
-    # aye-net-helper, which is what would actually call it.
+    # aye-netns-seal, which is what would actually call it.
     _stub("$root/bin/ip", 'exit 0;') unless $opts->{no_ip};
 
     my $outf = "$root/out";

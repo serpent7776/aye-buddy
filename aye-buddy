@@ -205,28 +205,28 @@ print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
     if $ENV{AYE_BUDDY_DEBUG};
 
 my $self_dir     = $RealBin;
-my $ll_helper    = "$self_dir/ll-helper";
+my $landlock     = "$self_dir/aye-landlock";
 my $proxy_helper = "$self_dir/aye-proxy";
-my $net_helper   = "$self_dir/aye-net-helper";
+my $netns_seal   = "$self_dir/aye-netns-seal";
 
 # Check egress filtering requirements
 if ($net_filter) {
     on_path('pasta') or fail("--net-filter needs pasta (passt); install it or pass --no-net-filter");
     on_path('ip')    or fail("--net-filter needs ip (iproute2); install it or pass --no-net-filter");
     -r $proxy_helper or fail("egress proxy not found: $proxy_helper");
-    -r $net_helper   or fail("egress net helper not found: $net_helper");
+    -r $netns_seal   or fail("egress netns seal not found: $netns_seal");
 }
 # Under --allow-bwrap the relaxed blob re-allows the mount/namespace syscalls a
 # nested bwrap needs; everything else stays denied.
 my $seccomp_blob = $allow_bwrap ? "$self_dir/filter-nested.bpf"
                                 : "$self_dir/filter.bpf";
 
-# Where ll-helper is mounted *inside* the sandbox.
-my $ll_dest = '/tmp/.aye-buddy-ll-helper';
+# Where aye-landlock is mounted *inside* the sandbox.
+my $landlock_dest = '/tmp/.aye-buddy-landlock';
 
 my $use_landlock = 1;
-if (!-r $ll_helper) {
-    warning("ll-helper not found ($ll_helper); Landlock layer off");
+if (!-r $landlock) {
+    warning("aye-landlock not found ($landlock); Landlock layer off");
     $use_landlock = 0;
 }
 
@@ -338,9 +338,9 @@ try_ro("$home/.config/git");
 try_ro("$home/.ssh/config");
 try_ro("$home/.ssh/known_hosts");
 
-# Bind the helper at $ll_dest for the in-sandbox `perl` to read. RO — never written.
+# Bind the helper at $landlock_dest for the in-sandbox `perl` to read. RO — never written.
 if ($use_landlock) {
-    bind_ro($ll_helper, $ll_dest);
+    bind_ro($landlock, $landlock_dest);
 }
 
 my $ssh_sock = $ENV{SSH_AUTH_SOCK};
@@ -376,7 +376,7 @@ for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
     push @args, '--setenv', $var, $val if defined $val && length $val;
 }
 
-# Hand ll-helper the permitted paths (newline-separated) accumulated above. Once
+# Hand aye-landlock the permitted paths (newline-separated) accumulated above. Once
 # the ruleset is enforced everything else is denied, so the lists must also cover
 # the synthetic mounts (/tmp, /proc, /dev, the tmpfs $HOME). Paths resolve inside
 # the sandbox: "$HOME" is the tmpfs, not host home, so granting it rw exposes
@@ -443,7 +443,7 @@ if (-r $seccomp_blob) {
     warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
 }
 
-# Payload: run the agent directly, or wrap it in ll-helper so Landlock is applied
+# Payload: run the agent directly, or wrap it in aye-landlock so Landlock is applied
 # to the final sandbox view and inherited down into the agent and its children.
 my @payload = (
     $agent_spec->{bin},
@@ -451,10 +451,10 @@ my @payload = (
     @ARGV,
 );
 if ($use_landlock) {
-    @payload = ('perl', $ll_dest, '--', @payload);
+    @payload = ('perl', $landlock_dest, '--', @payload);
 }
 
-# Point claude's clients at the proxy. aye-net-helper rewrites @@AYE_PROXY@@ to
+# Point claude's clients at the proxy. aye-netns-seal rewrites @@AYE_PROXY@@ to
 # the real URL inside the netns (only there is the gateway address known), and
 # --clearenv above means these are the only proxy vars the session sees.
 if ($net_filter) {
@@ -511,8 +511,8 @@ unless ($net_filter) {
 
 # Filtered path. aye-buddy becomes a small supervisor: it starts the proxy on
 # the host, launches the sandbox under pasta, waits, then always kills the
-# proxy. Under pasta the chain is pasta -> aye-net-helper -> bwrap -> claude;
-# aye-net-helper drops the netns default route, rewrites @@AYE_PROXY@@ to the
+# proxy. Under pasta the chain is pasta -> aye-netns-seal -> bwrap -> claude;
+# aye-netns-seal drops the netns default route, rewrites @@AYE_PROXY@@ to the
 # proxy URL, and arms the seccomp blob itself (pasta need not preserve fds).
 
 # 1. Start aye-proxy; read the ephemeral port it binds from its stdout. The
@@ -560,11 +560,11 @@ unless ($proxy_port) {
 my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
 # --quiet + log-to-file keep pasta's own diagnostics (the IPv6 "local mode"
 # notes and friends) off the shared terminal, where they'd clutter claude's TUI.
-# IPv6 is sealed inside the netns by aye-net-helper (it drops the v6 default
+# IPv6 is sealed inside the netns by aye-netns-seal (it drops the v6 default
 # route too), not with pasta --ipv4-only — that flag broke pasta's netns setup
 # on some hosts, so we leave pasta's dual-stack default and seal at the routes.
 my @launch = ('pasta', '--config-net', '--quiet', '--log-file', $pasta_log, '--',
-              $^X, $net_helper, $proxy_port, $blob_arg,
+              $^X, $netns_seal, $proxy_port, $blob_arg,
               ($allow_subnet ? '--allow-subnet' : ()), '--',
               'bwrap', @args);
 my $sandbox_pid = fork // fail("fork sandbox: $!");
