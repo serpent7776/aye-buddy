@@ -300,6 +300,7 @@ link_to('usr/bin',   '/bin');
 link_to('usr/lib',   '/lib');
 link_to('usr/lib64', '/lib64');
 mount_rw('--proc',  '/proc');
+# /sys not mounted deliberately, add specific paths if needed
 mount_rw('--dev',   '/dev');
 mount_rw('--tmpfs', '/tmp');
 mount_rw('--tmpfs', $home);
