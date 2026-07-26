@@ -69,6 +69,7 @@ sub start_proxy {
     if ($pid == 0) {
         close $rd;
         open STDOUT, '>&', $wr or die;
+        open STDERR, '>', '/dev/null';    # keep the proxy's DENY warns out of prove
         exec $^X, $PROXY, map { ('--allow', $_) } @allow;
         die "exec proxy: $!";
     }
