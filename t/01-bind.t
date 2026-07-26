@@ -40,6 +40,15 @@ subtest 'missing intermediate dir: cannot resolve path' => sub {
     like $r->{err}, qr/cannot resolve path/;
 };
 
+# A newline would split the newline-joined LL_RW/LL_RO lists, silently dropping
+# the real path's Landlock grant, so it's rejected outright.
+subtest 'newline in --bind path is rejected' => sub {
+    my $r = run_aye('--bind', "/tmp\n/etc");
+    is $r->{exit}, 1;
+    like $r->{err}, qr/may not contain a newline/;
+    is $r->{argv}, [], 'bwrap never invoked';
+};
+
 subtest 'relative --bind path is resolved to absolute' => sub {
     # The harness runs inside a temp repo; '.' resolves to that repo dir, which
     # exists, so this must succeed and reach bwrap as an absolute path.

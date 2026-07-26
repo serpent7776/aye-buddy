@@ -151,6 +151,9 @@ if (!$saw_sep) {
 sub resolve_bind {
     my ($flag, $path) = @_;
     length $path or fail("$flag requires a PATH argument");
+    # LL_RW/LL_RO are newline-joined, so a newline in a path would split it into
+    # two bogus Landlock entries and silently drop the real grant.
+    $path =~ /[\r\n]/ and fail("$flag: path may not contain a newline: $path");
     my $abs = Cwd::abs_path($path) // fail("$flag: cannot resolve path: $path");
     -e $abs or fail("$flag: no such path: $path");
     return $abs;
