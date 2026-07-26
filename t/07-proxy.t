@@ -4,6 +4,7 @@ use Test2::V0;
 use IO::Socket::INET;
 use Socket qw(SOL_SOCKET SO_RCVTIMEO);
 use Cwd qw(abs_path);
+use Time::HiRes qw(sleep);
 
 # Bound blocking reads on $s, so a tunnel that swallows bytes fails the test
 # instead of hanging the suite. Done at the socket, not with select(): buffered
@@ -21,6 +22,24 @@ my $PROXY = abs_path('aye-proxy') or die "cannot locate aye-proxy";
 
 my @kids;
 sub reap { kill 'TERM', @kids; waitpid $_, 0 for @kids; }
+
+# Direct children of $ppid, read from /proc (Linux-only, like the rest of the
+# sandbox). Used to catch tunnel handlers the proxy forks per connection.
+sub child_pids_of {
+    my ($ppid) = @_;
+    my @out;
+    opendir(my $d, '/proc') or return @out;
+    for my $pid (grep { /\A[0-9]+\z/ } readdir $d) {
+        open(my $fh, '<', "/proc/$pid/stat") or next;
+        my $stat = readline($fh);
+        # Drop "pid (comm) state " so the next field is the ppid; comm can hold
+        # spaces and parens, so match through the last ')'.
+        next unless defined $stat && $stat =~ s/\A[0-9]+\s+\(.*\)\s+\S+\s+//s;
+        my ($pp) = split ' ', $stat;
+        push @out, $pid if defined $pp && $pp == $ppid;
+    }
+    return @out;
+}
 
 # A stub origin: greets with HELLO, then echoes one line back as ECHO:<line>.
 sub start_origin {
@@ -143,6 +162,33 @@ subtest 'connection cap sheds load past the limit' => sub {
 
     close $s2;
     close $s1;
+};
+
+subtest 'tunnel children do not outlive a proxy shutdown' => sub {
+    # A live tunnel is handled by a forked grandchild. Killing the proxy parent
+    # must take that child down too, not orphan it to init still holding egress.
+    my $pport = start_proxy("127.0.0.1:$origin");
+    my $ppid  = $kids[-1];
+
+    # Establish a tunnel and leave it open: the origin blocks reading our line,
+    # so the handler stays in pump() rather than exiting on EOF.
+    my ($s, $status) = connect_via($pport, "127.0.0.1:$origin");
+    like $status, qr{^HTTP/1\.1 200 }, 'tunnel established';
+    my $blank = <$s>;
+    is <$s>, "HELLO\n", 'tunnel is live';
+
+    my @tunnel = child_pids_of($ppid);
+    is scalar(@tunnel), 1, 'proxy forked one tunnel handler';
+
+    kill 'TERM', $ppid;
+    waitpid $ppid, 0;
+    pop @kids;    # reaped here; keep the final reap() from waiting on it again
+
+    # The handler is not our child, so poll liveness instead of waitpid.
+    my $alive = 1;
+    for (1 .. 40) { last unless $alive = kill 0, $tunnel[0]; sleep 0.05 }
+    ok !$alive, 'tunnel handler died with the proxy';
+    close $s;
 };
 
 reap();

@@ -87,6 +87,9 @@ $SIG{CHLD} = sub {
     }
 };
 
+# On shutdown, tear down live tunnels too.
+$SIG{TERM} = $SIG{INT} = sub { kill 'TERM', keys %kids; exit 0 };
+
 my $srv = IO::Socket::INET->new(
     Listen    => 128,
     LocalAddr => $addr,
