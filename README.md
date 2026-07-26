@@ -158,6 +158,11 @@ aye-buddy --allow-host git.internal.corp --allow-host registry.example:443
 WebSearch runs on Anthropic's servers, so it keeps working; only WebFetch
 (which fetches from your machine) is subject to the allowlist.
 
+Only IPv4 destinations are reachable. The proxy dials origins over IPv4
+and the session's IPv6 egress is sealed, so an IPv6 literal is rejected by
+`--allow-host` and an IPv6-only hostname won't connect — use an IPv4 or
+dual-stacked host.
+
 **This is egress control, not prevention — the residual risks:**
 
 - **Anything you allow is a two-way channel.** Data can still leave via an

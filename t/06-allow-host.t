@@ -58,6 +58,14 @@ subtest 'wildcard --allow-host is rejected' => sub {
     like $r->{err}, qr/invalid host/;
 };
 
+subtest 'IPv6 literal --allow-host is rejected with a clear message' => sub {
+    for my $v6 ('2001:db8::1', '[2001:db8::1]:443', '::1') {
+        my $r = run_aye('--allow-host', $v6);
+        is $r->{exit}, 1, "exits 1 for $v6";
+        like $r->{err}, qr/IPv6 literals are unsupported/, "explains why for $v6";
+    }
+};
+
 subtest '--allow-host after claude args is a misplaced-flag error' => sub {
     my $r = run_aye('-p', 'hi', '--allow-host', 'x.example');
     is $r->{exit}, 1;
