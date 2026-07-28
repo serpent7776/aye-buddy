@@ -9,7 +9,7 @@
 CC ?= cc
 CFLAGS ?= -O2 -Wall
 
-.PHONY: install uninstall seccomp clean test
+.PHONY: install uninstall seccomp check-stamp clean test
 
 install:
 	@./install.sh
@@ -18,17 +18,26 @@ install:
 # Run with prove; fall back to prove in Perl's scriptdir when it's off PATH
 # (e.g. Arch/Manjaro keep it in /usr/bin/core_perl).
 PROVE ?= prove
-test:
+test: check-stamp
 	@P=$$(command -v $(PROVE) || echo "$$(perl -MConfig -e 'print $$Config{scriptdir}')/prove"); \
 	"$$P" -lr t/
 
-# Rebuild the committed seccomp blobs from source.
-seccomp: filter.bpf filter-nested.bpf
-
-filter.bpf filter-nested.bpf: gen-seccomp.c
-	$(CC) $(CFLAGS) -o gen-seccomp gen-seccomp.c -lseccomp
+# Rebuild the committed seccomp blobs from source. The stamp lets the test
+# suite catch a forgotten rebuild without needing a toolchain.
+seccomp: gen-seccomp
 	./gen-seccomp filter.bpf
 	./gen-seccomp --allow-nested-bwrap filter-nested.bpf
+	sha256sum gen-seccomp.c > seccomp.stamp
+
+gen-seccomp: gen-seccomp.c
+	$(CC) $(CFLAGS) -o gen-seccomp gen-seccomp.c -lseccomp
+
+# Fail if the blobs were not regenerated after the last gen-seccomp.c edit.
+check-stamp:
+	@sha256sum -c seccomp.stamp >/dev/null 2>&1 || { \
+		echo "seccomp blobs stale: run 'make seccomp' and commit the result" >&2; \
+		exit 1; \
+	}
 
 clean:
 	@rm -f gen-seccomp

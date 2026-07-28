@@ -214,6 +214,15 @@ Black-box tests for option parsing and the egress helpers (`t/`). The full
 network mechanism needs real namespaces and is verified out-of-band by
 `t/manual/egress-check.sh`.
 
+## Development
+
+The seccomp denylists (`filter.bpf`, `filter-nested.bpf`) are committed blobs
+generated from `gen-seccomp.c`; regenerate them with `make seccomp` after
+editing the source. That also refreshes `seccomp.stamp`, a checksum of the
+source the blobs were built from — `make check-stamp` verifies it and runs
+first under `make test`, so a forgotten rebuild fails the tests on any
+machine, no toolchain required.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
