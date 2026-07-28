@@ -5,6 +5,7 @@ use strict;
 use warnings;
 use Cwd ();
 use POSIX ();
+use Errno qw(EINTR);
 use Getopt::Long qw(GetOptions);
 use FindBin qw($RealBin);
 use lib $RealBin;
@@ -582,15 +583,30 @@ if ($sandbox_pid == 0) {
         or POSIX::_exit(127);
 }
 
-# 3. Supervise: forward terminating signals to the sandbox, wait for it, then
-#    tear the proxy down and propagate the exit status.
+# 3. Supervise: forward terminating signals to the sandbox and wait on both
+#    children. Sandbox first is the normal path: tear the proxy down and
+#    propagate the exit status. Proxy first means the session's egress is dead
+#    with no visible symptom, so fault the session; the message prints after
+#    the TUI is gone, and the proxy log is kept as the only evidence.
 $SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
-waitpid($sandbox_pid, 0);
-my $status = $?;
-kill 'TERM', $proxy_pid;
-waitpid($proxy_pid, 0);
+my $status;
+my $proxy_died = 0;
+while (1) {
+    my $pid = waitpid(-1, 0);
+    if ($pid == $sandbox_pid) { $status = $?; last }
+    if ($pid == $proxy_pid)   { $proxy_died = 1; kill 'TERM', $sandbox_pid; next }
+    last if $pid < 0 && $! != EINTR;    # no children left; can't happen
+}
+unless ($proxy_died) {
+    kill 'TERM', $proxy_pid;
+    waitpid($proxy_pid, 0);
+}
 # Drop the helper logs on a clean exit; keep them under debug for inspection.
 # The rmdir is best-effort: it fails harmlessly while other sessions' logs
 # share the runtime dir.
+if ($proxy_died) {
+    unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
+    fail("aye-proxy exited unexpectedly; session terminated (log: $proxy_log)");
+}
 unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
 exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
