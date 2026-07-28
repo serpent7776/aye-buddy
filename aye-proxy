@@ -34,11 +34,10 @@ my $CONNECT_TIMEOUT = 10;      # origin connect
 my $HEADER_TIMEOUT  = 30;      # deadline for the whole CONNECT header
 my $IDLE_TIMEOUT    = 1800;    # reap a tunnel idle in both directions
 
-my (@allow, $port, $addr);
-$port = 0;
-$addr = '127.0.0.1';
-GetOptions('allow=s' => \@allow, 'port=i' => \$port, 'addr=s' => \$addr)
+my (@allow, $fd);
+GetOptions('allow=s' => \@allow, 'fd=i' => \$fd)
     or die "aye-proxy: bad options\n";
+defined $fd or die "aye-proxy: --fd is required\n";
 push @allow, grep { length } split /\n/, ($ENV{AYE_PROXY_ALLOW} // '');
 
 # Parse each entry once into [host, port|undef].
@@ -71,7 +70,6 @@ sub connect_allowed {
     return 0;
 }
 
-$| = 1;
 
 # A tunnel peer can vanish mid-write; without this, syswrite's SIGPIPE kills the
 # child instead of returning an error pump() can act on.
@@ -90,15 +88,11 @@ $SIG{CHLD} = sub {
 # On shutdown, tear down live tunnels too.
 $SIG{TERM} = $SIG{INT} = sub { kill 'TERM', keys %kids; exit 0 };
 
-my $srv = IO::Socket::INET->new(
-    Listen    => 128,
-    LocalAddr => $addr,
-    LocalPort => $port,
-    ReuseAddr => 1,
-    Proto     => 'tcp',
-) or die "aye-proxy: listen on $addr:$port: $!\n";
-# Announce the bound port so the launcher can point the netns at it.
-print "port=", $srv->sockport, "\n";
+# The launcher binds the listening socket and hands it over by fd; it keeps
+# the socket bound across proxy restarts, so the port is never free for
+# another local user to claim between one proxy and the next.
+my $srv = IO::Socket::INET->new_from_fd($fd, '+<')
+    or die "aye-proxy: fd $fd: $!\n";
 
 while (1) {
     my $client = $srv->accept;

@@ -34,8 +34,18 @@ command -v curl   >/dev/null || { echo "SKIP: curl not installed";  exit 2; }
 [ -f "$netns_seal" ]         || { echo "SKIP: $netns_seal not found"; exit 2; }
 
 # Start aye-proxy on the host (it has real network; the netns will not).
+# It takes its listening socket by fd, so bind here, announce the port, exec.
 proxy_out=$(mktemp)
-"$proxy_bin" --allow "$ALLOWED_HOST" --port 0 >"$proxy_out" 2>"$proxy_out.err" &
+perl -MIO::Socket::INET -MFcntl=F_SETFD -e '
+    my ($proxy, $allow) = @ARGV;
+    my $srv = IO::Socket::INET->new(Listen => 128, LocalAddr => "127.0.0.1",
+        LocalPort => 0, ReuseAddr => 1, Proto => "tcp") or die "listen: $!\n";
+    $| = 1;
+    print "port=", $srv->sockport, "\n";
+    fcntl($srv, F_SETFD, 0) or die "fcntl: $!\n";
+    exec $^X, $proxy, "--fd", fileno($srv), "--allow", $allow
+        or die "exec: $!\n";
+' "$proxy_bin" "$ALLOWED_HOST" >"$proxy_out" 2>"$proxy_out.err" &
 proxy_pid=$!
 trap 'kill "$proxy_pid" 2>/dev/null; rm -f "$proxy_out" "$proxy_out.err"' EXIT
 

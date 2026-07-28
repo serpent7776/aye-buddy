@@ -6,6 +6,8 @@ use warnings;
 use Cwd ();
 use POSIX ();
 use Errno qw(EINTR);
+use Fcntl qw(F_SETFD);
+use IO::Socket::INET;
 use Getopt::Long qw(GetOptions);
 use FindBin qw($RealBin);
 use lib $RealBin;
@@ -520,16 +522,15 @@ unless ($net_filter) {
 }
 
 # Filtered path. aye-buddy becomes a small supervisor: it starts the proxy on
-# the host, launches the sandbox under pasta, waits, then always kills the
-# proxy. Under pasta the chain is pasta -> aye-netns-seal -> bwrap -> claude;
+# the host, launches the sandbox under pasta, waits, restarts the proxy if it
+# dies, and always kills it at the end. Under pasta the chain is
+# pasta -> aye-netns-seal -> bwrap -> claude;
 # aye-netns-seal drops the netns default route, rewrites @@AYE_PROXY@@ to the
 # proxy URL, and arms the seccomp blob itself (pasta need not preserve fds).
 
-# 1. Start aye-proxy; read the ephemeral port it binds from its stdout. The
-#    allowlist is passed via the environment so it isn't exposed in `ps`. The
-#    proxy's diagnostics (blocked hosts) go to a log file, NOT the shared
-#    terminal — otherwise they'd scribble over claude's TUI. The log is removed
-#    on exit; AYE_BUDDY_DEBUG prints its path and keeps it for inspection.
+# 1. Bind the proxy's listening socket here and hand it to aye-proxy by fd:
+#    the supervisor keeps the port bound for the whole session, so a crashed
+#    proxy can be safely restarted.
 my $logdir;
 my $rundir = $ENV{XDG_RUNTIME_DIR};
 if (defined $rundir && $rundir =~ m{^/} && -d $rundir && -o _) {
@@ -545,25 +546,37 @@ if ($ENV{AYE_BUDDY_DEBUG}) {
     warning("egress proxy log: $proxy_log");
     warning("pasta log: $pasta_log");
 }
-pipe(my $proxy_rd, my $proxy_wr) or fail("pipe: $!");
-my $proxy_pid = fork // fail("fork proxy: $!");
-if ($proxy_pid == 0) {
-    close $proxy_rd;
-    open(STDOUT, '>&', $proxy_wr) or POSIX::_exit(127);
-    open(STDERR, '>>', $proxy_log);    # best-effort; keep denials off the TUI
-    $ENV{AYE_PROXY_ALLOW} = join("\n", @allow_hosts);
-    exec { $^X } $^X, $proxy_helper, '--addr', '127.0.0.1', '--port', '0'
-        or POSIX::_exit(127);
+my $proxy_sock = IO::Socket::INET->new(
+    Listen    => 128,
+    LocalAddr => '127.0.0.1',
+    LocalPort => 0,
+    ReuseAddr => 1,
+    Proto     => 'tcp',
+) or fail("listen for aye-proxy: $!");
+my $proxy_port = $proxy_sock->sockport;
+
+sub spawn_proxy {
+    my $pid = fork // return;
+    if ($pid == 0) {
+        open(STDOUT, '>>', $proxy_log);
+        open(STDERR, '>>', $proxy_log);    # best-effort; keep denials off the TUI
+        # Perl marks the fd close-on-exec; clear that so the proxy inherits it.
+        fcntl($proxy_sock, F_SETFD, 0) or POSIX::_exit(127);
+        $ENV{AYE_PROXY_ALLOW} = join("\n", @allow_hosts);
+        exec { $^X } $^X, $proxy_helper, '--fd', fileno($proxy_sock)
+            or POSIX::_exit(127);
+    }
+    return $pid;
 }
-close $proxy_wr;
-my $port_line = readline($proxy_rd);
-close $proxy_rd;
-my ($proxy_port) = ($port_line // '') =~ /port=(\d+)/;
-unless ($proxy_port) {
-    kill 'TERM', $proxy_pid;
-    unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
-    fail("aye-proxy did not report a listening port");
+
+sub proxy_log_note {
+    open(my $fh, '>>', $proxy_log) or return;
+    print {$fh} "aye-buddy: $_[0]\n";
+    close $fh;
+    return;
 }
+
+my $proxy_pid = spawn_proxy() // fail("fork proxy: $!");
 
 # 2. Run the sandbox under pasta. '-' when seccomp is off tells the helper not
 #    to arm the blob.
@@ -585,28 +598,53 @@ if ($sandbox_pid == 0) {
 
 # 3. Supervise: forward terminating signals to the sandbox and wait on both
 #    children. Sandbox first is the normal path: tear the proxy down and
-#    propagate the exit status. Proxy first means the session's egress is dead
-#    with no visible symptom, so fault the session; the message prints after
-#    the TUI is gone, and the proxy log is kept as the only evidence.
+#    propagate the exit status. A proxy death is invisible from inside the
+#    session (egress just goes dead), so the supervisor restarts it — the
+#    listening socket is still bound, so waiting clients queue in the backlog
+#    rather than getting refused. A proxy that keeps dying is a bug, not a
+#    wobble: past the cap the session is faulted, with the message printed
+#    after the TUI is gone and the proxy log kept as the only evidence.
+my $MAX_PROXY_RESTARTS = 5;
 $SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
 my $status;
 my $proxy_died = 0;
+my $restarts = 0;
 while (1) {
     my $pid = waitpid(-1, 0);
     if ($pid == $sandbox_pid) { $status = $?; last }
-    if ($pid == $proxy_pid)   { $proxy_died = 1; kill 'TERM', $sandbox_pid; next }
+    if (defined $proxy_pid && $pid == $proxy_pid) {
+        my $replacement;
+        if ($restarts < $MAX_PROXY_RESTARTS) {
+            $restarts++;
+            proxy_log_note("aye-proxy exited (status $?); restarting ($restarts/$MAX_PROXY_RESTARTS)");
+            $replacement = spawn_proxy();
+        }
+        if (defined $replacement) {
+            $proxy_pid = $replacement;
+        } else {
+            # Cap exhausted, or the respawn fork itself failed: fault.
+            $proxy_pid = undef;
+            $proxy_died = 1;
+            kill 'TERM', $sandbox_pid;
+        }
+        next;
+    }
     last if $pid < 0 && $! != EINTR;    # no children left; can't happen
 }
-unless ($proxy_died) {
+if (defined $proxy_pid) {
     kill 'TERM', $proxy_pid;
     waitpid($proxy_pid, 0);
 }
-# Drop the helper logs on a clean exit; keep them under debug for inspection.
-# The rmdir is best-effort: it fails harmlessly while other sessions' logs
-# share the runtime dir.
+# Drop the helper logs on a clean exit; keep them under debug for inspection —
+# or whenever the proxy died, since the log is the only record of why.
 if ($proxy_died) {
     unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
-    fail("aye-proxy exited unexpectedly; session terminated (log: $proxy_log)");
+    fail("aye-proxy kept dying ($restarts restarts); session terminated (log: $proxy_log)");
 }
-unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
+if ($restarts) {
+    warning("aye-proxy died and was restarted $restarts time(s) this session (log: $proxy_log)");
+    unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
+} else {
+    unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
+}
 exit($status & 127 ? 128 + ($status & 127) : $status >> 8);

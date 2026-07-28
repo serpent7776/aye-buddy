@@ -3,6 +3,7 @@ use warnings;
 use Test2::V0;
 use IO::Socket::INET;
 use Socket qw(SOL_SOCKET SO_RCVTIMEO);
+use Fcntl qw(F_SETFD);
 use Cwd qw(abs_path);
 use Time::HiRes qw(sleep);
 
@@ -61,24 +62,35 @@ sub start_origin {
     return $port;
 }
 
-# Start aye-proxy with the given allow entries; return its listening port.
-sub start_proxy {
-    my @allow = @_;
-    pipe(my $rd, my $wr) or die "pipe: $!";
+sub listener {
+    return IO::Socket::INET->new(Listen => 5, LocalAddr => '127.0.0.1',
+        LocalPort => 0, ReuseAddr => 1, Proto => 'tcp') // die "listen: $!";
+}
+
+# Start aye-proxy on an already-listening socket via --fd, the way aye-buddy's
+# supervisor does.
+sub start_proxy_on_fd {
+    my ($srv, @allow) = @_;
     my $pid = fork // die "fork: $!";
     if ($pid == 0) {
-        close $rd;
-        open STDOUT, '>&', $wr or die;
+        open STDOUT, '>', '/dev/null';
         open STDERR, '>', '/dev/null';    # keep the proxy's DENY warns out of prove
-        exec $^X, $PROXY, map { ('--allow', $_) } @allow;
+        fcntl($srv, F_SETFD, 0) or die "F_SETFD: $!";
+        exec $^X, $PROXY, '--fd', fileno($srv), map { ('--allow', $_) } @allow;
         die "exec proxy: $!";
     }
     push @kids, $pid;
-    close $wr;
-    my $line = <$rd>;
-    my ($port) = ($line // '') =~ /port=(\d+)/
-        or do { reap(); die "no port from proxy (got: " . ($line // 'eof') . ")" };
-    return $port;
+    return $pid;
+}
+
+# Start aye-proxy with the given allow entries; return its listening port.
+# Clients need not wait for the proxy to come up: the socket is bound before
+# the fork, so early connections queue in the backlog.
+sub start_proxy {
+    my @allow = @_;
+    my $srv = listener();
+    start_proxy_on_fd($srv, @allow);
+    return $srv->sockport;
 }
 
 # Open a CONNECT request through the proxy; return (socket, status_line).
@@ -163,6 +175,23 @@ subtest 'connection cap sheds load past the limit' => sub {
 
     close $s2;
     close $s1;
+};
+
+subtest 'a client that connects while no proxy is attached is served after one attaches' => sub {
+    # The restart-gap property: the launcher holds the listening socket, so a
+    # connection landing between one proxy and the next queues in the backlog
+    # instead of being refused, and completes once the replacement accepts.
+    my $srv = listener();
+    my $s = IO::Socket::INET->new(PeerHost => '127.0.0.1',
+        PeerPort => $srv->sockport, Proto => 'tcp') or die "dial: $!";
+    $s->autoflush(1);
+    set_read_timeout($s, 5);
+    print $s "CONNECT 127.0.0.1:$origin HTTP/1.1\r\nHost: x\r\n\r\n";
+    start_proxy_on_fd($srv, "127.0.0.1:$origin");
+    like scalar(<$s>), qr{^HTTP/1\.1 200 }, 'queued connection completes';
+    my $blank = <$s>;    # consume the header terminator
+    is <$s>, "HELLO\n", 'tunnel is live';
+    close $s;
 };
 
 subtest 'tunnel children do not outlive a proxy shutdown' => sub {
