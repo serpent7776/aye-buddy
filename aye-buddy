@@ -210,6 +210,7 @@ my @default_allow_hosts = (
     'codeload.github.com',
     'objects.githubusercontent.com',
     'gitlab.com',
+    'codeberg.org',
 );
 my @allow_hosts = (@default_allow_hosts, @extra_hosts);
 print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
