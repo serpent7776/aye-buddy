@@ -189,6 +189,8 @@ sub resolve_allow_host {
 # destination, so the default set is only what a session genuinely needs.
 # SSH git hosts are intentionally absent — reaching them is the raw-TCP lane
 # (opened per host), because an open host:22 doubles as a reverse-shell target.
+# An entry covers the host and its subdomains, so list the shortest one that
+# grants what's needed — no point spelling out a subdomain of one already here.
 my @default_allow_hosts = (
     # Claude API and OAuth — without these the session can't run.
     'api.anthropic.com',
@@ -201,13 +203,11 @@ my @default_allow_hosts = (
     'files.pythonhosted.org',
     # crates.io
     'crates.io',
-    'static.crates.io',
     # Go modules
     'proxy.golang.org',
     'sum.golang.org',
     # git over HTTPS (SSH hosts go through --allow-host, not here)
     'github.com',
-    'codeload.github.com',
     'githubusercontent.com',
     'gitlab.com',
     'codeberg.org',
