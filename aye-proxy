@@ -11,9 +11,10 @@
 #
 # Allowlist entries come from --allow (repeatable) and the newline-separated
 # AYE_PROXY_ALLOW env (so the full list needn't show up in `ps`). Each entry is
-# HOST or HOST:PORT; a port-less entry permits 80/443, a HOST:PORT entry permits
-# exactly that port. Host match is exact or a dot-suffix (foo.example matches
-# example). Everything else gets 403.
+# HOST or HOST:PORT; a port-less entry permits 443 (this proxy serves CONNECT
+# only, so plain HTTP can't work anyway), a HOST:PORT entry permits exactly that
+# port. Host match is exact or a dot-suffix (foo.example matches example).
+# Everything else gets 403.
 #
 # The client is an untrusted sandbox, so resource use is bounded: at most
 # AYE_PROXY_MAX_CONNS concurrent tunnels (default 256; excess get 503), plus
@@ -65,7 +66,7 @@ sub connect_allowed {
     for my $e (@entries) {
         my ($eh, $ep) = @$e;
         next unless host_match($h, $eh);
-        return 1 if defined $ep ? $p == $ep : ($p == 443 || $p == 80);
+        return 1 if defined $ep ? $p == $ep : $p == 443;
     }
     return 0;
 }
@@ -174,7 +175,9 @@ sub read_connect_request {
     # is intentionally unsupported: the allowlisted hosts are all HTTPS, and
     # deny-by-default is the safe posture.
     my ($host, $dport) = $line =~ m{\ACONNECT\s+([^\s:]+):([0-9]+)\s}i;
-    return reply($client, 405, 'Method Not Allowed') unless defined $host;
+    return reply($client, 405, 'Method Not Allowed',
+        "aye-proxy tunnels CONNECT only; plain-HTTP proxying is unsupported. Use https://\n")
+        unless defined $host;
     return ($host, $dport, $rest);
 }
 
@@ -192,8 +195,10 @@ sub write_all {
 }
 
 sub reply {
-    my ($client, $code, $msg) = @_;
-    print $client "HTTP/1.1 $code $msg\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    my ($client, $code, $msg, $body) = @_;
+    $body //= '';
+    print $client "HTTP/1.1 $code $msg\r\nContent-Length: ", length $body,
+                  "\r\nConnection: close\r\n\r\n", $body;
     close $client;
     return;
 }

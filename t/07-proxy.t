@@ -142,10 +142,19 @@ subtest 'non-allowlisted host is refused' => sub {
 };
 
 subtest 'allowlisted host on a non-permitted port is refused' => sub {
-    # Port-less entry permits only 80/443, so the ephemeral origin port is denied.
+    # Port-less entry permits only 443, so the ephemeral origin port is denied.
     my $pport = start_proxy("127.0.0.1");
     my ($s, $status) = connect_via($pport, "127.0.0.1:$origin");
     like $status, qr{^HTTP/1\.1 403 }, 'port not permitted';
+    close $s;
+};
+
+subtest 'a port-less entry does not imply port 80' => sub {
+    # The proxy serves CONNECT only, so :80 granted an unadvertised raw-TCP lane
+    # to every allowlisted host without making http:// work. Ask for it by name.
+    my $pport = start_proxy("127.0.0.1");
+    my ($s, $status) = connect_via($pport, "127.0.0.1:80");
+    like $status, qr{^HTTP/1\.1 403 }, 'port 80 is not implied';
     close $s;
 };
 
@@ -156,6 +165,10 @@ subtest 'non-CONNECT method is rejected' => sub {
     $s->autoflush(1);
     print $s "GET http://127.0.0.1/ HTTP/1.1\r\nHost: x\r\n\r\n";
     like scalar(<$s>), qr{^HTTP/1\.1 405 }, 'plain HTTP not served';
+    # The body is the only place the reason shows up; an empty 405 leaves the
+    # caller guessing why an http:// URL failed.
+    my $rest = do { local $/; <$s> };
+    like $rest, qr/CONNECT only/, '405 explains itself';
     close $s;
 };
 
