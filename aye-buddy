@@ -208,7 +208,7 @@ my @default_allow_hosts = (
     # git over HTTPS (SSH hosts go through --allow-host, not here)
     'github.com',
     'codeload.github.com',
-    'objects.githubusercontent.com',
+    'githubusercontent.com',
     'gitlab.com',
     'codeberg.org',
 );
