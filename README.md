@@ -80,7 +80,7 @@ than being silently forwarded.
 | `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today. |
 | `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
-| `--allow-host HOST[:PORT]` | Add a host and its subdomains to the network allowlist. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
+| `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--allow-subnet` | Keep same-subnet (LAN) hosts reachable under the filter. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
@@ -155,9 +155,9 @@ The default allowlist covers the Claude API, the major package registries
 aye-buddy --allow-host git.internal.corp --allow-host registry.example:443
 ```
 
-An entry matches itself and every subdomain: `--allow-host example.com`
-also opens `anything.example.com`, and the default `github.com` includes
-every `*.github.com`. Allowlist the most specific hostname that works.
+An entry matches that hostname and nothing else: `--allow-host example.com`
+does not open `anything.example.com`, and the default `github.com` does not
+include `codeload.github.com`.
 
 Only HTTPS is reachable. The proxy tunnels `CONNECT` and serves no other
 verb, so an `http://` URL fails with a 405 whatever the allowlist says —

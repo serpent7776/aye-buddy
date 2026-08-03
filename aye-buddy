@@ -64,8 +64,9 @@ options:
   --bind PATH               expose an extra host path read-write at the same
                             path inside the sandbox (repeatable)
   --bind-ro PATH            same, read-only (repeatable)
-  --allow-host HOST[:PORT]  add a host to the egress allowlist; without a port
-                            80 and 443 are allowed (repeatable)
+  --allow-host HOST[:PORT]  add a host to the egress allowlist; matched exactly
+                            (subdomains need their own entry), and without a
+                            port only 443 is allowed (repeatable)
   --no-net-filter           turn off egress filtering, use the host network
   --allow-subnet            keep same-subnet (LAN) hosts reachable
   --allow-bwrap             let the session run bwrap itself (nested
@@ -189,8 +190,8 @@ sub resolve_allow_host {
 # destination, so the default set is only what a session genuinely needs.
 # SSH git hosts are intentionally absent — reaching them is the raw-TCP lane
 # (opened per host), because an open host:22 doubles as a reverse-shell target.
-# An entry covers the host and its subdomains, so list the shortest one that
-# grants what's needed — no point spelling out a subdomain of one already here.
+# An entry matches that exact hostname only, so every host a toolchain talks to
+# has to be named here — a subdomain of a listed host is not covered.
 my @default_allow_hosts = (
     # Claude API and OAuth — without these the session can't run.
     'api.anthropic.com',
@@ -201,14 +202,18 @@ my @default_allow_hosts = (
     # PyPI
     'pypi.org',
     'files.pythonhosted.org',
-    # crates.io
+    # crates.io: sparse index and crate downloads live on their own hosts
     'crates.io',
+    'index.crates.io',
+    'static.crates.io',
     # Go modules
     'proxy.golang.org',
     'sum.golang.org',
     # git over HTTPS (SSH hosts go through --allow-host, not here)
     'github.com',
-    'githubusercontent.com',
+    'codeload.github.com',
+    'raw.githubusercontent.com',
+    'objects.githubusercontent.com',
     'gitlab.com',
     'codeberg.org',
 );

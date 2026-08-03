@@ -13,7 +13,8 @@
 # AYE_PROXY_ALLOW env (so the full list needn't show up in `ps`). Each entry is
 # HOST or HOST:PORT; a port-less entry permits 443 (this proxy serves CONNECT
 # only, so plain HTTP can't work anyway), a HOST:PORT entry permits exactly that
-# port. Host match is exact or a dot-suffix (foo.example matches example).
+# port. Host match is exact: a subdomain of an allowed host is not allowed, so
+# whoever can create a record under that domain can't pick our destination.
 # Everything else gets 403.
 #
 # The client is an untrusted sandbox, so resource use is bounded: at most
@@ -48,11 +49,6 @@ for my $e (@allow) {
     push @entries, [ lc $h, defined $p ? $p + 0 : undef ];
 }
 
-sub host_match {
-    my ($h, $e) = @_;
-    return $h eq $e || $h =~ /\.\Q$e\E\z/;
-}
-
 # Replace control bytes with '?' so a hostile value can't inject terminal
 # escapes into a log an operator may later cat.
 sub ascii_sanitise {
@@ -65,7 +61,7 @@ sub connect_allowed {
     $h = lc $h;
     for my $e (@entries) {
         my ($eh, $ep) = @$e;
-        next unless host_match($h, $eh);
+        next unless $h eq $eh;
         return 1 if defined $ep ? $p == $ep : $p == 443;
     }
     return 0;

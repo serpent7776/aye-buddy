@@ -141,6 +141,22 @@ subtest 'non-allowlisted host is refused' => sub {
     close $s;
 };
 
+subtest 'a subdomain of an allowlisted host is refused' => sub {
+    # Host match is exact. Under a dot-suffix rule this would tunnel, handing
+    # the destination to whoever can create a record under the allowed domain.
+    my $pport = start_proxy("localhost:$origin");
+    my ($s, $status) = connect_via($pport, "sub.localhost:$origin");
+    like $status, qr{^HTTP/1\.1 403 }, 'subdomain not covered by the parent';
+    close $s;
+};
+
+subtest 'an allowlisted hostname tunnels through' => sub {
+    my $pport = start_proxy("localhost:$origin");
+    my ($s, $status) = connect_via($pport, "localhost:$origin");
+    like $status, qr{^HTTP/1\.1 200 }, 'exact hostname match allowed';
+    close $s;
+};
+
 subtest 'allowlisted host on a non-permitted port is refused' => sub {
     # Port-less entry permits only 443, so the ephemeral origin port is denied.
     my $pport = start_proxy("127.0.0.1");
