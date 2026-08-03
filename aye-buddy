@@ -213,7 +213,9 @@ my @default_allow_hosts = (
     'github.com',
     'codeload.github.com',
     'raw.githubusercontent.com',
+    'media.githubusercontent.com',
     'objects.githubusercontent.com',
+    'objects-origin.githubusercontent.com',
     'gitlab.com',
     'codeberg.org',
 );
