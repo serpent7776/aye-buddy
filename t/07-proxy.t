@@ -190,6 +190,16 @@ subtest 'a single-label dotted entry is dropped, not applied' => sub {
     close $s2;
 };
 
+subtest 'a NUL in the CONNECT host is refused' => sub {
+    # The allow decision compares Perl strings, the connect goes through the C
+    # resolver: a NUL makes them disagree, and the dot-suffix rule sees a name
+    # ending in the allowed domain while the dial reaches whatever precedes it.
+    my $pport = start_proxy(".example.invalid:$origin");
+    my ($s, $status) = connect_via($pport, "127.0.0.1\x00.example.invalid:$origin");
+    like $status, qr{^HTTP/1\.1 403 }, 'truncating byte rejected, not tunnelled';
+    close $s;
+};
+
 subtest 'allowlisted host on a non-permitted port is refused' => sub {
     # Port-less entry permits only 443, so the ephemeral origin port is denied.
     my $pport = start_proxy("127.0.0.1");

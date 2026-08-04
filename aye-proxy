@@ -157,7 +157,7 @@ sub handle {
 # our 200 lands its first tunnel payload in the same read as the request, and
 # dropping it strands the peer on a handshake that never completes.
 # Returns () after replying with an error if the request never arrives, is
-# oversized, or isn't a CONNECT.
+# oversized, isn't a CONNECT, or names a host that isn't a plain hostname.
 sub read_connect_request {
     my ($client) = @_;
     # One deadline for the whole header
@@ -186,6 +186,14 @@ sub read_connect_request {
     return reply($client, 405, 'Method Not Allowed',
         "aye-proxy tunnels CONNECT only; plain-HTTP proxying is unsupported. Use https://\n")
         unless defined $host;
+    # The allow decision compares Perl strings; the connect hands the name to the
+    # C resolver, which stops at a NUL. Anything outside a hostname's shape opens
+    # that gap, so it never reaches either. Same rule --allow-host validates
+    # against, since the two are compared to each other.
+    unless ($host =~ /\A[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\z/) {
+        warn "aye-proxy: DENY ", ascii_sanitise("$host:$dport"), "\n";
+        return reply($client, 403, 'Blocked by allowlist');
+    }
     return ($host, $dport, $rest);
 }
 
