@@ -46,6 +46,7 @@ push @allow, grep { length } split /\n/, ($ENV{AYE_PROXY_ALLOW} // '');
 my @entries;
 for my $e (@allow) {
     my ($h, $p) = $e =~ /\A(.+?)(?::([0-9]+))?\z/;
+    next unless defined $h;
     push @entries, [ lc $h, defined $p ? $p + 0 : undef ];
 }
 
