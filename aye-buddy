@@ -64,9 +64,9 @@ options:
   --bind PATH               expose an extra host path read-write at the same
                             path inside the sandbox (repeatable)
   --bind-ro PATH            same, read-only (repeatable)
-  --allow-host HOST[:PORT]  add a host to the egress allowlist; matched exactly
-                            (subdomains need their own entry), and without a
-                            port only 443 is allowed (repeatable)
+  --allow-host HOST[:PORT]  add a host to the egress allowlist, matched exactly;
+                            .HOST covers its subdomains too, and without a port
+                            only 443 is allowed (repeatable)
   --no-net-filter           turn off egress filtering, use the host network
   --allow-subnet            keep same-subnet (LAN) hosts reachable
   --allow-bwrap             let the session run bwrap itself (nested
@@ -166,19 +166,25 @@ sub resolve_bind {
 @extra_ro = map { resolve_bind('--bind-ro', $_) } @extra_ro;
 
 # Validate each --allow-host value: a hostname or literal IP, optionally with a
-# :PORT. No wildcards — the filter resolves names to addresses, and '*.x' has no
-# address. Reject junk here rather than letting it reach the filter as a rule.
-sub resolve_allow_host {
+# :PORT and optionally prefixed with a dot to cover subdomains too.
+# Reject junk here rather than letting it reach the filter as a rule.
+sub validate_allow_host {
     my ($host) = @_;
     length $host or fail("--allow-host requires a HOST argument");
     # we don't support IPv6, so just reject it
     $host =~ /[\[\]]|:.*:/
         and fail("--allow-host: IPv6 literals are unsupported (egress is IPv4-only): $host");
-    $host =~ /\A[A-Za-z0-9._-]+(?::[0-9]+)?\z/
-        or fail("--allow-host: invalid host (want HOST or HOST:PORT): $host");
+    $host =~ /\A\.?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?::[0-9]+)?\z/
+        or fail("--allow-host: invalid host (want HOST, .HOST for subdomains, "
+              . "either with an optional :PORT): $host");
+    # A dotted entry needs a domain under it: a typo-catcher for a stray '.com',
+    # not a public-suffix check ('.co.uk' and friends still pass).
+    $host =~ /\A\.[^.:]+(?::|\z)/
+        and fail("--allow-host: .HOST needs at least two labels (want "
+               . ".example.com, not a bare suffix): $host");
     return $host;
 }
-@extra_hosts = map { resolve_allow_host($_) } @extra_hosts;
+@extra_hosts = map { validate_allow_host($_) } @extra_hosts;
 
 # --- Network egress policy ------------------------------------------------
 # The canonical allowlist of hosts a session may reach. The filtering layer
@@ -189,7 +195,8 @@ sub resolve_allow_host {
 # SSH git hosts are intentionally absent — reaching them is the raw-TCP lane
 # (opened per host), because an open host:22 doubles as a reverse-shell target.
 # An entry matches that exact hostname only, so every host a toolchain talks to
-# has to be named here — a subdomain of a listed host is not covered.
+# has to be named here. The '.example.com' form covers subdomains too, reaching
+# whatever they serve on the allowed port, so the defaults don't use it.
 my @default_allow_hosts = (
     # Claude API and OAuth — without these the session can't run.
     'api.anthropic.com',

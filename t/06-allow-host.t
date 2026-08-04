@@ -56,6 +56,42 @@ subtest 'wildcard --allow-host is rejected' => sub {
     my $r = run_aye('--allow-host', '*.example.com');
     is $r->{exit}, 1;
     like $r->{err}, qr/invalid host/;
+    like $r->{err}, qr/\.HOST for subdomains/, 'points at the dotted form';
+};
+
+subtest 'dotted --allow-host is accepted' => sub {
+    my $r = run_aye('--allow-host', '.example.com');
+    is $r->{exit}, 0;
+    like $r->{err}, qr/\Q.example.com\E/, 'reaches the filter with its dot';
+};
+
+subtest 'a dot with no host is rejected' => sub {
+    my $r = run_aye('--allow-host', '.');
+    is $r->{exit}, 1;
+    like $r->{err}, qr/invalid host/;
+};
+
+subtest 'a bare suffix is rejected in the dotted form' => sub {
+    # '.com' is one typo away from '.example.com' and would cover every host
+    # under it.
+    for my $h ('.com', '.com:443') {
+        my $r = run_aye('--allow-host', $h);
+        is $r->{exit}, 1, "$h is refused";
+        like $r->{err}, qr/at least two labels/, "$h says why";
+    }
+};
+
+subtest 'a single-label host is allowed without the dot' => sub {
+    my $r = run_aye('--allow-host', 'localhost:8080');
+    is $r->{exit}, 0;
+    like $r->{err}, qr/\Qlocalhost:8080\E/, 'reaches the filter';
+};
+
+subtest 'a trailing dot is rejected' => sub {
+    # It would never match: the proxy compares the client-supplied name as-is.
+    my $r = run_aye('--allow-host', 'example.com.');
+    is $r->{exit}, 1;
+    like $r->{err}, qr/invalid host/;
 };
 
 subtest 'IPv6 literal --allow-host is rejected with a clear message' => sub {

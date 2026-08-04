@@ -80,7 +80,7 @@ than being silently forwarded.
 | `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today. |
 | `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
-| `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
+| `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--allow-subnet` | Keep same-subnet (LAN) hosts reachable under the filter. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
@@ -158,6 +158,13 @@ aye-buddy --allow-host git.internal.corp --allow-host registry.example:443
 An entry matches that hostname and nothing else: `--allow-host example.com`
 does not open `anything.example.com`, and the default `github.com` does not
 include `codeload.github.com`.
+
+Prefix it with a dot to cover the subdomains as well — `--allow-host
+.example.com` opens `example.com` and everything under it. That's one entry
+instead of a list, at the cost of a tunnel to every name the domain's owner
+cares to create, running whatever they run on the allowed port: `.github.com`
+reaches `ssh.github.com:443`, which speaks SSH, not HTTPS. Prefer naming the
+hosts you actually need.
 
 Only HTTPS is reachable. The proxy tunnels `CONNECT` and serves no other
 verb, so an `http://` URL fails with a 405 whatever the allowlist says —

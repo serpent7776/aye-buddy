@@ -157,6 +157,25 @@ subtest 'an allowlisted hostname tunnels through' => sub {
     close $s;
 };
 
+subtest 'a dotted entry covers the domain and its subdomains' => sub {
+    my $pport = start_proxy(".localhost:$origin");
+    my ($s, $status) = connect_via($pport, "localhost:$origin");
+    like $status, qr{^HTTP/1\.1 200 }, 'the domain itself is allowed too';
+    close $s;
+    # Whether sub.localhost resolves is the resolver's business, so accept
+    # either outcome past the allow decision: 200 dialled, 502 didn't resolve.
+    my ($s2, $status2) = connect_via($pport, "sub.localhost:$origin");
+    like $status2, qr{^HTTP/1\.1 (200|502) }, 'subdomain cleared the allowlist';
+    close $s2;
+};
+
+subtest 'a dotted entry still needs the dot boundary' => sub {
+    my $pport = start_proxy(".localhost:$origin");
+    my ($s, $status) = connect_via($pport, "notlocalhost:$origin");
+    like $status, qr{^HTTP/1\.1 403 }, 'a bare suffix is not a subdomain';
+    close $s;
+};
+
 subtest 'allowlisted host on a non-permitted port is refused' => sub {
     # Port-less entry permits only 443, so the ephemeral origin port is denied.
     my $pport = start_proxy("127.0.0.1");

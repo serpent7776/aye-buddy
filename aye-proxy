@@ -11,11 +11,11 @@
 #
 # Allowlist entries come from --allow (repeatable) and the newline-separated
 # AYE_PROXY_ALLOW env (so the full list needn't show up in `ps`). Each entry is
-# HOST or HOST:PORT; a port-less entry permits 443 (this proxy serves CONNECT
-# only, so plain HTTP can't work anyway), a HOST:PORT entry permits exactly that
-# port. Host match is exact: a subdomain of an allowed host is not allowed, so
-# whoever can create a record under that domain can't pick our destination.
-# Everything else gets 403.
+# HOST or .HOST, with an optional :PORT; a port-less entry permits 443 (this
+# proxy serves CONNECT only, so plain HTTP can't work anyway), a :PORT entry
+# permits exactly that port. HOST matches that name and nothing else, so
+# whoever can create a record under the domain can't pick our destination;
+# .HOST gives that up for every name under it. Everything else gets 403.
 #
 # The client is an untrusted sandbox, so resource use is bounded: at most
 # AYE_PROXY_MAX_CONNS concurrent tunnels (default 256; excess get 503), plus
@@ -42,12 +42,15 @@ GetOptions('allow=s' => \@allow, 'fd=i' => \$fd)
 defined $fd or die "aye-proxy: --fd is required\n";
 push @allow, grep { length } split /\n/, ($ENV{AYE_PROXY_ALLOW} // '');
 
-# Parse each entry once into [host, port|undef].
+# Parse each entry once into [host, port|undef, subdomains?].
 my @entries;
 for my $e (@allow) {
     my ($h, $p) = $e =~ /\A(.+?)(?::([0-9]+))?\z/;
     next unless defined $h;
-    push @entries, [ lc $h, defined $p ? $p + 0 : undef ];
+    my $subs = $h =~ s/\A\.//;
+    # A bare '.' would leave nothing to compare and match on the suffix alone.
+    next unless length $h;
+    push @entries, [ lc $h, defined $p ? $p + 0 : undef, $subs ];
 }
 
 # Replace control bytes with '?' so a hostile value can't inject terminal
@@ -61,8 +64,8 @@ sub connect_allowed {
     my ($h, $p) = @_;
     $h = lc $h;
     for my $e (@entries) {
-        my ($eh, $ep) = @$e;
-        next unless $h eq $eh;
+        my ($eh, $ep, $subs) = @$e;
+        next unless $h eq $eh || ($subs && $h =~ /\.\Q$eh\E\z/);
         return 1 if defined $ep ? $p == $ep : $p == 443;
     }
     return 0;
