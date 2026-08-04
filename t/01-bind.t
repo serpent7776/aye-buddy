@@ -49,6 +49,15 @@ subtest 'a control byte in a rejected path is not echoed raw' => sub {
     like $r->{err}, qr{\Q/no/such?[2Kpath\E}, 'replaced, rest of the path intact';
 };
 
+# U+009B is CSI: a terminal decodes it from UTF-8 and acts on it as `ESC [`,
+# so scrubbing the 7-bit escapes alone would leave the same sequence usable.
+subtest 'the 8-bit form of a control byte is scrubbed too' => sub {
+    my $r = run_aye('--bind', "/no/such\xc2\x9b2Kpath");
+    is $r->{exit}, 1;
+    unlike $r->{err}, qr/\x9b/, 'no CSI on the terminal';
+    like $r->{err}, qr{\Q/no/such??2Kpath\E}, 'both bytes of it replaced';
+};
+
 # A newline would split the newline-joined LL_RW/LL_RO lists, silently dropping
 # the real path's Landlock grant, so it's rejected outright.
 subtest 'newline in --bind path is rejected' => sub {

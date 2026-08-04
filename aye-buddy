@@ -22,11 +22,12 @@ sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
 
 # Values we echo back — argv, the project path — can carry terminal escapes, so
-# strip the control bytes before they reach the user's terminal. Unlike the
-# proxy's log sanitiser this keeps non-ASCII: these are paths a user has to
-# recognise, and our own messages are not plain ASCII either.
+# reduce them to printable ASCII first. Keeping non-ASCII would mean deciding it
+# per character, not per byte: U+009B is CSI once a terminal has decoded the
+# UTF-8, and the bytes that encode it are the bytes every other character uses.
+# Only the value goes through this, never the surrounding message.
 sub printable {
-    (my $s = shift) =~ s/[\x00-\x1f\x7f]/?/g;
+    (my $s = shift) =~ s/[^\x20-\x7e]/?/g;
     return $s;
 }
 
@@ -200,7 +201,7 @@ sub validate_allow_host {
     # not a public-suffix check ('.co.uk' and friends still pass).
     $host =~ /\A\.[^.:]+(?::|\z)/
         and fail("--allow-host: .HOST needs at least two labels (want "
-               . ".example.com, not a bare suffix): $host");
+               . ".example.com, not a bare suffix): " . printable($host));
     return $host;
 }
 @extra_hosts = map { validate_allow_host($_) } @extra_hosts;
