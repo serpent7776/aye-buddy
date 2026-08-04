@@ -171,9 +171,7 @@ sub resolve_bind {
 sub resolve_allow_host {
     my ($host) = @_;
     length $host or fail("--allow-host requires a HOST argument");
-    # IPv6 literals can't be allowlisted: the proxy dials origins over IPv4 and
-    # the session's IPv6 egress is sealed. Reject them (bare or [v6]:port) with a
-    # clear message instead of the opaque "invalid host" the next check gives.
+    # we don't support IPv6, so just reject it
     $host =~ /[\[\]]|:.*:/
         and fail("--allow-host: IPv6 literals are unsupported (egress is IPv4-only): $host");
     $host =~ /\A[A-Za-z0-9._-]+(?::[0-9]+)?\z/
