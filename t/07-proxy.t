@@ -157,23 +157,37 @@ subtest 'an allowlisted hostname tunnels through' => sub {
     close $s;
 };
 
+# .invalid never resolves (RFC 2606), so these assert the allow decision alone:
+# 403 is the allowlist refusing, 502 is it clearing and the dial failing after.
 subtest 'a dotted entry covers the domain and its subdomains' => sub {
-    my $pport = start_proxy(".localhost:$origin");
-    my ($s, $status) = connect_via($pport, "localhost:$origin");
-    like $status, qr{^HTTP/1\.1 200 }, 'the domain itself is allowed too';
+    my $pport = start_proxy(".example.invalid:$origin");
+    my ($s, $status) = connect_via($pport, "example.invalid:$origin");
+    like $status, qr{^HTTP/1\.1 502 }, 'the domain itself is allowed too';
     close $s;
-    # Whether sub.localhost resolves is the resolver's business, so accept
-    # either outcome past the allow decision: 200 dialled, 502 didn't resolve.
-    my ($s2, $status2) = connect_via($pport, "sub.localhost:$origin");
-    like $status2, qr{^HTTP/1\.1 (200|502) }, 'subdomain cleared the allowlist';
+    my ($s2, $status2) = connect_via($pport, "sub.example.invalid:$origin");
+    like $status2, qr{^HTTP/1\.1 502 }, 'subdomain cleared the allowlist';
     close $s2;
 };
 
 subtest 'a dotted entry still needs the dot boundary' => sub {
-    my $pport = start_proxy(".localhost:$origin");
-    my ($s, $status) = connect_via($pport, "notlocalhost:$origin");
+    my $pport = start_proxy(".example.invalid:$origin");
+    my ($s, $status) = connect_via($pport, "notexample.invalid:$origin");
     like $status, qr{^HTTP/1\.1 403 }, 'a bare suffix is not a subdomain';
     close $s;
+};
+
+subtest 'a single-label dotted entry is dropped, not applied' => sub {
+    # '.localhost' would open every host under the TLD. aye-buddy rejects it,
+    # but the rule has to hold here too: anything else feeding the allowlist
+    # gets the wide entry silently. The whole entry goes, so the name itself
+    # stops being allowed as well.
+    my $pport = start_proxy(".localhost:$origin");
+    my ($s, $status) = connect_via($pport, "sub.localhost:$origin");
+    like $status, qr{^HTTP/1\.1 403 }, 'no TLD-wide subdomain rule';
+    close $s;
+    my ($s2, $status2) = connect_via($pport, "localhost:$origin");
+    like $status2, qr{^HTTP/1\.1 403 }, 'entry dropped whole';
+    close $s2;
 };
 
 subtest 'allowlisted host on a non-permitted port is refused' => sub {

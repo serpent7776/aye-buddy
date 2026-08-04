@@ -15,7 +15,8 @@
 # proxy serves CONNECT only, so plain HTTP can't work anyway), a :PORT entry
 # permits exactly that port. HOST matches that name and nothing else, so
 # whoever can create a record under the domain can't pick our destination;
-# .HOST gives that up for every name under it. Everything else gets 403.
+# .HOST gives that up for every name under it, and needs two labels so a bare
+# suffix can't hand over a TLD. Everything else gets 403.
 #
 # The client is an untrusted sandbox, so resource use is bounded: at most
 # AYE_PROXY_MAX_CONNS concurrent tunnels (default 256; excess get 503), plus
@@ -50,6 +51,13 @@ for my $e (@allow) {
     my $subs = $h =~ s/\A\.//;
     # A bare '.' would leave nothing to compare and match on the suffix alone.
     next unless length $h;
+    # '.com' would open every host under the TLD, which no caller means; drop it
+    # here as well as at the CLI, since this is where the rule has to hold.
+    if ($subs && $h !~ /\./) {
+        warn "aye-proxy: ignoring allowlist entry '" . ascii_sanitise($e)
+           . "': .HOST needs at least two labels\n";
+        next;
+    }
     push @entries, [ lc $h, defined $p ? $p + 0 : undef, $subs ];
 }
 

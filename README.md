@@ -168,6 +168,12 @@ cares to create, running whatever they run on the allowed port: `.github.com`
 reaches `ssh.github.com:443`, which speaks SSH, not HTTPS. Prefer naming the
 hosts you actually need.
 
+Check who the owner is before you use it. A bare suffix like `.com` is
+rejected, but that's a typo-catcher, not a public-suffix check: `.github.io`,
+`.pages.dev` and `.co.uk` all pass, and each opens a domain anyone can get a
+name under — an exfil endpoint that costs an attacker one signup. The dotted
+form is for a domain one party controls, not for a hosting suffix.
+
 Only HTTPS is reachable. The proxy tunnels `CONNECT` and serves no other
 verb, so an `http://` URL fails with a 405 whatever the allowlist says —
 `--allow-host example.com:80` opens port 80 to a client that tunnels for
