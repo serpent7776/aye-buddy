@@ -21,6 +21,15 @@ our $VERSION = '0.1.0';
 sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
 
+# Values we echo back — argv, the project path — can carry terminal escapes, so
+# strip the control bytes before they reach the user's terminal. Unlike the
+# proxy's log sanitiser this keeps non-ASCII: these are paths a user has to
+# recognise, and our own messages are not plain ASCII either.
+sub printable {
+    (my $s = shift) =~ s/[\x00-\x1f\x7f]/?/g;
+    return $s;
+}
+
 sub on_path {
     my ($cmd) = @_;
     for my $d (split /:/, $ENV{PATH} // '') {
@@ -139,7 +148,8 @@ for my $spec (keys %opt_spec) {
 }
 on_path('bwrap') or fail("required command not found on PATH: bwrap");
 my $agent_spec = $AGENTS{$agent}
-    or fail("unknown agent: $agent (supported: " . join(', ', sort keys %AGENTS) . ")");
+    or fail("unknown agent: " . printable($agent)
+          . " (supported: " . join(', ', sort keys %AGENTS) . ")");
 on_path($agent_spec->{bin})
     or fail("required command not found on PATH: $agent_spec->{bin}");
 # pass_through leaves a leading `--` in place; consume it as our separator so a
@@ -152,8 +162,9 @@ if (!$saw_sep) {
         # --bind=PATH is as much ours as --bind PATH, so match on the name only.
         (my $flag = $arg) =~ s/=.*//s;
         next unless $our_flag{$flag};
-        fail("$arg is an aye-buddy flag but came after the agent's arguments;\n" .
-             "  move it before them, or use `--` to force it through to the agent.");
+        fail(printable($arg) . " is an aye-buddy flag but came after the agent's " .
+             "arguments;\n  move it before them, or use `--` to force it through " .
+             "to the agent.");
     }
 }
 # Resolve each extra path to an absolute, existing one. abs_path still returns a
@@ -164,9 +175,9 @@ sub resolve_bind {
     length $path or fail("$flag requires a PATH argument");
     # LL_RW/LL_RO are newline-joined, so a newline in a path would split it into
     # two bogus Landlock entries and silently drop the real grant.
-    $path =~ /[\r\n]/ and fail("$flag: path may not contain a newline: $path");
-    my $abs = Cwd::abs_path($path) // fail("$flag: cannot resolve path: $path");
-    -e $abs or fail("$flag: no such path: $path");
+    $path =~ /[\r\n]/ and fail("$flag: path may not contain a newline: " . printable($path));
+    my $abs = Cwd::abs_path($path) // fail("$flag: cannot resolve path: " . printable($path));
+    -e $abs or fail("$flag: no such path: " . printable($path));
     return $abs;
 }
 @extra_rw = map { resolve_bind('--bind',    $_) } @extra_rw;
@@ -180,10 +191,11 @@ sub validate_allow_host {
     length $host or fail("--allow-host requires a HOST argument");
     # we don't support IPv6, so just reject it
     $host =~ /[\[\]]|:.*:/
-        and fail("--allow-host: IPv6 literals are unsupported (egress is IPv4-only): $host");
+        and fail("--allow-host: IPv6 literals are unsupported (egress is IPv4-only): "
+               . printable($host));
     $host =~ /\A\.?[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?::[0-9]+)?\z/
         or fail("--allow-host: invalid host (want HOST, .HOST for subdomains, "
-              . "either with an optional :PORT): $host");
+              . "either with an optional :PORT): " . printable($host));
     # A dotted entry needs a domain under it: a typo-catcher for a stray '.com',
     # not a public-suffix check ('.co.uk' and friends still pass).
     $host =~ /\A\.[^.:]+(?::|\z)/
@@ -287,7 +299,7 @@ my $project_dir;
         $dir = dirname($dir);
     }
 }
-fail("$cwd is not inside a git or jj repository")
+fail(printable($cwd) . " is not inside a git or jj repository")
     unless defined $project_dir;
 
 # A linked worktree (or submodule) has `.git` as a FILE pointing OUTSIDE this
@@ -295,7 +307,7 @@ fail("$cwd is not inside a git or jj repository")
 # git command inside the sandbox fails. Refuse rather than launch a sandbox where
 # git silently breaks. (Real fix: bind the worktree gitdir + commondir too — TODO.)
 if (-f "$project_dir/.git") {
-    fail("$project_dir is a git worktree or submodule (.git is a file\n" .
+    fail(printable($project_dir) . " is a git worktree or submodule (.git is a file\n" .
          "  pointing outside this directory); git won't work inside the sandbox.\n" .
          "  Not supported yet — run aye-buddy from the main checkout instead.");
 }

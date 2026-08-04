@@ -40,6 +40,15 @@ subtest 'missing intermediate dir: cannot resolve path' => sub {
     like $r->{err}, qr/cannot resolve path/;
 };
 
+# The rejected value is echoed back, so a path can't smuggle terminal escapes
+# into the message (a directory name is not always something the user typed).
+subtest 'a control byte in a rejected path is not echoed raw' => sub {
+    my $r = run_aye('--bind', "/no/such\e[2Kpath");
+    is $r->{exit}, 1;
+    unlike $r->{err}, qr/\e/, 'no escape byte on the terminal';
+    like $r->{err}, qr{\Q/no/such?[2Kpath\E}, 'replaced, rest of the path intact';
+};
+
 # A newline would split the newline-joined LL_RW/LL_RO lists, silently dropping
 # the real path's Landlock grant, so it's rejected outright.
 subtest 'newline in --bind path is rejected' => sub {
