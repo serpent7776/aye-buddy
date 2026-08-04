@@ -83,6 +83,7 @@ than being silently forwarded.
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--allow-subnet` | Keep same-subnet (LAN) hosts reachable under the filter. |
+| `--allow-ssh` | Forward your SSH agent socket into the session. Off by default — see below. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
 | `--help` | Print the flag list and exit. |
 | `--version` | Print the version and exit. |
@@ -109,9 +110,10 @@ project's `.git/hooks`, `.git/config`, `.git/modules`; and the parts of
 under you stays read-only; the rest is writable so Claude's own state
 keeps working.
 
-**Forwarded:** your SSH agent socket (if `SSH_AUTH_SOCK` is set), the
-filtered network, and a minimal set of environment variables. Every other
-env var — API tokens, cloud credentials — is cleared so it can't leak in.
+**Forwarded:** the filtered network, a minimal set of environment
+variables, and — only with `--allow-ssh` — your SSH agent socket. Every
+other env var, API tokens and cloud credentials included, is cleared so it
+can't leak in.
 
 **Not visible at all:** `~/.ssh` private keys, `~/.aws`, `~/.config/gcloud`,
 `~/.kube`, `~/.netrc`, browser profiles, password stores, other projects,
@@ -189,7 +191,8 @@ dual-stacked host.
   host that shares infrastructure with an allowed one.
 - **SSH remotes aren't proxied automatically.** `ssh` doesn't honour
   `HTTPS_PROXY` — prefer HTTPS remotes, or allowlist the host and route
-  `ssh` through the proxy with a `ProxyCommand`.
+  `ssh` through the proxy with a `ProxyCommand` (and see
+  [`--allow-ssh`](#--allow-ssh-agent-forwarding) for the key half).
 
 `--no-net-filter` turns all of this off and restores full network access
 — useful for debugging or a workload the allowlist can't express.
@@ -202,6 +205,20 @@ under bwrap), at the cost of a wider syscall surface and turning off the
 Landlock layer for the session. It's opt-in and prints a warning, because
 it reduces isolation. The host kernel must permit nested unprivileged user
 namespaces (the default wherever `bwrap` already works).
+
+## `--allow-ssh` (agent forwarding)
+
+Off by default: the session gets no `SSH_AUTH_SOCK`, so `ssh` and
+git-over-SSH inside it have no key to offer. `--allow-ssh` binds the host
+agent's socket in at `/run/ssh-agent` (the private keys themselves stay
+invisible, as with any agent forward) and prints a warning.
+
+The warning is there because an agent signature can't be scoped to a
+destination: for as long as the session runs it can ask your agent to
+authenticate to *any* host it can reach, not only the git remote you had in
+mind. Under the egress filter that's a short list — reaching an SSH host at
+all needs `--allow-host` plus a `ProxyCommand` — but the capability is
+wider than the use, so it's a deliberate choice rather than a default.
 
 ## Limitations
 

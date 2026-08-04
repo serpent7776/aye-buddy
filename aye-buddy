@@ -69,6 +69,8 @@ options:
                             only 443 is allowed (repeatable)
   --no-net-filter           turn off egress filtering, use the host network
   --allow-subnet            keep same-subnet (LAN) hosts reachable
+  --allow-ssh               forward the host SSH agent socket into the session;
+                            the agent then signs for any host, not just git
   --allow-bwrap             let the session run bwrap itself (nested
                             sandboxing); reduces isolation
   --help                    show this help and exit
@@ -101,16 +103,21 @@ USAGE
 #   --allow-subnet keeps same-subnet (LAN) hosts reachable under the filter.
 #     Default routing tightens to the proxy only; this is the escape hatch for
 #     workloads that need a LAN host, or setups where tightening is too strict.
+#   --allow-ssh forwards $SSH_AUTH_SOCK into the sandbox. Opt-in because an agent
+#     can't scope a signature to one destination: the session can have the host
+#     agent authenticate to anything it can reach, for the session's lifetime.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
 my $allow_subnet = 0;
+my $allow_ssh    = 0;
 my $agent        = 'claude';
 my ($show_help, $show_version);
 my (@extra_rw, @extra_ro, @extra_hosts);
 my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'net-filter!'   => \$net_filter,
                'allow-subnet'  => \$allow_subnet,
+               'allow-ssh'     => \$allow_ssh,
                'agent=s'       => \$agent,
                'bind:s'        => \@extra_rw,
                'bind-ro:s'     => \@extra_ro,
@@ -368,10 +375,19 @@ if ($use_landlock) {
     bind_ro($landlock, $landlock_dest);
 }
 
-my $ssh_sock = $ENV{SSH_AUTH_SOCK};
-if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
-    bind_rw($ssh_sock, '/run/ssh-agent');
-    push @args, '--setenv', 'SSH_AUTH_SOCK', '/run/ssh-agent';
+# Agent forwarding, opt-in. Fixed path inside the sandbox so the env var doesn't
+# leak the host-side socket path.
+if ($allow_ssh) {
+    my $ssh_sock = $ENV{SSH_AUTH_SOCK};
+    if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
+        warning("--allow-ssh: the session can have your SSH agent authenticate "
+              . "to any host it reaches, not just git remotes");
+        bind_rw($ssh_sock, '/run/ssh-agent');
+        push @args, '--setenv', 'SSH_AUTH_SOCK', '/run/ssh-agent';
+    }
+    else {
+        warning("--allow-ssh: no agent socket at SSH_AUTH_SOCK; nothing forwarded");
+    }
 }
 
 # Reintroduce any required env var

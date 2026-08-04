@@ -35,7 +35,8 @@ sub _stub {
 #   argv    : the stub bwrap's argv as an arrayref (aye-buddy's constructed call)
 # An optional leading hashref sets options; { no_repo => 1 } omits the .git marker
 # so the run happens outside any repo, { no_ip => 1 } drops the ip stub so the
-# net-filter dependency check can be exercised.
+# net-filter dependency check can be exercised, { ssh_sock => 1 } listens on a
+# unix socket and points SSH_AUTH_SOCK at it (aye-buddy requires a real -S path).
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
@@ -55,6 +56,14 @@ sub run_aye {
     # aye-netns-seal, which is what would actually call it.
     _stub("$root/bin/ip", 'exit 0;') unless $opts->{no_ip};
 
+    # Keep the listener in the parent so it outlives the exec'd child.
+    my $agent_sock;
+    if ($opts->{ssh_sock}) {
+        require IO::Socket::UNIX;
+        $agent_sock = IO::Socket::UNIX->new(Listen => 1, Local => "$root/agent.sock")
+            or die "agent socket: $!";
+    }
+
     my $outf = "$root/out";
     my $errf = "$root/err";
 
@@ -64,7 +73,9 @@ sub run_aye {
         $ENV{PATH} = "$root/bin";       # only our stubs; keep it hermetic
         $ENV{HOME} = "$root/home";
         $ENV{TMPDIR} = $root;           # proxy log lands here, cleaned with $root
-        delete $ENV{SSH_AUTH_SOCK};     # keep the bwrap argv deterministic
+        # Deterministic bwrap argv: no host agent unless a test asks for one.
+        if ($agent_sock) { $ENV{SSH_AUTH_SOCK} = "$root/agent.sock" }
+        else             { delete $ENV{SSH_AUTH_SOCK} }
         chdir "$root/repo" or die "chdir: $!";
         open my $o, '>', $outf or die $!;
         open my $e, '>', $errf or die $!;
