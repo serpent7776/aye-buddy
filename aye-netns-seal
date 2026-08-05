@@ -6,11 +6,10 @@
 #   1. restricts routing so only the pasta gateway (where the host, and thus
 #      aye-proxy, is mapped) is reachable — the wider internet AND the local
 #      subnet lose their route (IPv4 and the IPv6 default too), so a raw-socket
-#      reverse shell / LAN pivot can't connect. Then it probes the proxy: if the
-#      tightening broke reachability
-#      it restores just the on-link subnet route (the proxy is reachable again,
-#      the internet still has no route). --allow-subnet skips tightening
-#      outright. Finally it VERIFIES the seal actually holds — no route to the
+#      reverse shell / LAN pivot can't connect. Then it probes the proxy, and
+#      refuses to launch if it can't be reached. --no-lan-filter skips tightening
+#      outright, leaving the on-link subnet routable straight past the proxy.
+#      Finally it VERIFIES the seal actually holds — no route to the
 #      wider internet survived — and refuses to launch if it can't prove that,
 #      rather than run a session that looks filtered but isn't. It also installs
 #      an nft filter dropping all but the proxy port on the gateway (so the pasta
@@ -37,12 +36,12 @@ sub warn_h { print STDERR "aye-netns-seal: $_[0]\n" }
 # fail the whole ruleset, silently dropping the loopback/IPv6 hardening.
 sub valid_port { $_[0] =~ /\A[0-9]+\z/ && $_[0] >= 1 && $_[0] <= 65535 }
 
-# argv: PROXY_PORT  SECCOMP(-|path)  [--allow-subnet]  --  CMD [ARG...]
-my $port    = shift // die_h('usage: aye-netns-seal PORT SECCOMP [--allow-subnet] -- CMD...');
+# argv: PROXY_PORT  SECCOMP(-|path)  [--no-lan-filter]  --  CMD [ARG...]
+my $port    = shift // die_h('usage: aye-netns-seal PORT SECCOMP [--no-lan-filter] -- CMD...');
 valid_port($port) or die_h("proxy port '$port' not a valid TCP port (1-65535)");
 my $seccomp = shift // die_h('missing SECCOMP argument (path or -)');
-my $allow_subnet = 0;
-if (@ARGV && $ARGV[0] eq '--allow-subnet') { $allow_subnet = 1; shift }
+my $no_lan_filter = 0;
+if (@ARGV && $ARGV[0] eq '--no-lan-filter') { $no_lan_filter = 1; shift }
 my $sep     = shift // '';
 $sep eq '--' or die_h('expected -- separator before the command');
 my @cmd = @ARGV;
@@ -53,8 +52,8 @@ my $default = qx(ip -4 route show default 2>/dev/null);
 my ($gwaddr, $ifc) = $default =~ /default via (\S+) dev (\S+)/;
 $gwaddr && $ifc or die_h('no default route present (is pasta --config-net active?)');
 
-# Save the on-link (subnet) routes before touching anything, so we can restore
-# the looser routing if the tightening turns out to break reachability.
+# Name the on-link (subnet) routes before touching anything: the tightening below
+# deletes them by prefix, and this is the only place they're enumerated.
 my @link = grep { /\S/ } split /\n/, qx(ip -4 route show scope link dev $ifc 2>/dev/null);
 
 # Drop the default route: the wider internet must have no path out. This is the
@@ -77,20 +76,24 @@ for (1 .. 8) {
 # Tighten to a single gateway host-route unless the caller opted out: remove the
 # auto on-link subnet route too, leaving ONLY the gateway (= proxy) reachable, so
 # same-subnet LAN hosts lose their route as well. Then verify the proxy is still
-# reachable; if pasta needs the on-link route to answer for the gateway, restore
-# just the subnet route — NOT a default route, which would hand a raw socket the
-# whole internet again.
-unless ($allow_subnet) {
+# reachable, and fail closed if it isn't. Widening back to the subnet route can't
+# be the fix: the /32 is more specific than the prefix it replaces and on the same
+# device, so the prefix was already shadowed for gateway traffic. Restoring it
+# would hand the session the LAN to cover for a proxy path that stays broken.
+unless ($no_lan_filter) {
     system('ip', 'route', 'replace', "$gwaddr/32", 'dev', $ifc);
     for my $r (@link) {
         my ($pfx) = split ' ', $r;
         system('ip', 'route', 'del', $pfx, 'dev', $ifc)
             if $pfx && $pfx ne "$gwaddr/32";
     }
-    unless (gateway_reachable($gwaddr, $port)) {
-        warn_h("gateway unreachable after tightening; restoring the on-link subnet route (internet stays unrouted)");
-        system('ip', 'route', 'replace', (split ' ', $_)[0], 'dev', $ifc) for @link;
-    }
+    # Don't point at --no-lan-filter here: by the same argument the proxy path is
+    # broken for a reason keeping the subnet route won't mend, and that flag skips
+    # this probe, so it would trade a clear failure for a session that launches
+    # with the LAN open and still no proxy.
+    gateway_reachable($gwaddr, $port) or die_h(
+        "proxy unreachable at $gwaddr:$port after tightening; refusing to launch.\n" .
+        "  Re-run with --no-net-filter to run WITHOUT egress filtering.");
 }
 
 # Positive seal verification: prove the netns has no route to the wider internet
@@ -107,7 +110,7 @@ egress_sealed() or die_h(
 # a metadata mock) — a pivot/exfil surface the route seal doesn't cover. Drop
 # every packet to the gateway except the proxy port, leaving the proxy as the
 # only thing the host exposes. Surgical (only the gateway address is touched), so
-# it composes with --allow-subnet, whose LAN traffic goes to other addresses.
+# it composes with --no-lan-filter, whose LAN traffic goes to other addresses.
 # Best-effort: unlike the internet seal this is secondary hardening, so if nft is
 # absent or the rules don't take we warn and carry on rather than refuse to
 # launch — the internet is still sealed either way.
@@ -128,7 +131,7 @@ sub gateway_reachable {
 # only path a raw socket has to an arbitrary internet host, since we never add a
 # specific public route — and (b) the kernel has no concrete route to a
 # documentation address (RFC 5737 TEST-NET-3 / RFC 3849 2001:db8::/32, reserved
-# so they can never collide with a real subnet, even under --allow-subnet). Any
+# so they can never collide with a real subnet, even under --no-lan-filter). Any
 # surviving route to one means egress is open.
 sub egress_sealed {
     for my $p (['-4', '203.0.113.1'], ['-6', '2001:db8::1']) {

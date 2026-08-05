@@ -36,23 +36,31 @@ subtest '--no-net-filter: exec bwrap directly and share the host network' => sub
     ok !has($r, '--uid'), 'no uid override (bwrap maps the real uid directly)';
 };
 
-subtest 'routing tightens by default; --allow-subnet opts out' => sub {
+subtest 'routing tightens by default; --no-lan-filter opts out' => sub {
     my $tight = run_aye();
-    ok !has($tight, '--allow-subnet'),
-        'default launch does not pass --allow-subnet to the helper';
+    ok !has($tight, '--no-lan-filter'),
+        'default launch does not pass --no-lan-filter to the helper';
 
-    my $loose = run_aye('--allow-subnet');
+    my $loose = run_aye('--no-lan-filter');
     is $loose->{exit}, 0, 'exits 0';
-    ok has($loose, '--allow-subnet'),
-        '--allow-subnet is forwarded to aye-netns-seal';
+    ok has($loose, '--no-lan-filter'),
+        '--no-lan-filter is forwarded to aye-netns-seal';
     # and it stays an aye-buddy flag, not a claude one
     my @after_claude = do {
         my @a = @{$loose->{argv}};
         my ($ci) = grep { $a[$_] eq 'claude' } 0 .. $#a;
         defined $ci ? @a[$ci .. $#a] : ();
     };
-    ok !(grep { $_ eq '--allow-subnet' } @after_claude),
-        '--allow-subnet does not leak into the claude payload';
+    ok !(grep { $_ eq '--no-lan-filter' } @after_claude),
+        '--no-lan-filter does not leak into the claude payload';
+
+    # The `!` spec owns the positive form too, and it's the default. pass_through
+    # forwards an unrecognised flag rather than failing, so what proves the spec
+    # covers it is that it's consumed here and reaches nothing downstream.
+    my $explicit = run_aye('--lan-filter');
+    is $explicit->{exit}, 0, '--lan-filter is accepted';
+    ok !has($explicit, '--lan-filter'), 'and consumed, not forwarded';
+    ok !has($explicit, '--no-lan-filter'), 'and tightens as usual';
 };
 
 subtest '--allow-reserved is ours, not claude\'s' => sub {

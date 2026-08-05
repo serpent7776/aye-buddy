@@ -88,7 +88,7 @@ PROBE
 
 # run_helper(\%opts) -> { out, err, exit, ip_log, nft_log }
 #   opts: raw_argv (arrayref, verbatim argv — for parse-error tests) OR the
-#   built form: seccomp('-'), allow_subnet, port($LPORT), probe_args, and the
+#   built form: seccomp('-'), no_lan_filter, port($LPORT), probe_args, and the
 #   world knobs gw/ifc/link/no_default/v6def/del_noop/unsealed/no_nft.
 sub run_helper {
     my ($o) = @_;
@@ -117,7 +117,7 @@ sub run_helper {
     my @argv = $o->{raw_argv} ? @{$o->{raw_argv}} : (
         $o->{port} // $LPORT,
         $o->{seccomp} // '-',
-        ($o->{allow_subnet} ? ('--allow-subnet') : ()),
+        ($o->{no_lan_filter} ? ('--no-lan-filter') : ()),
         '--', "$bin/probe", @{$o->{probe_args} // ['@@AYE_PROXY@@']},
     );
 
@@ -211,10 +211,10 @@ subtest 'a surviving IPv6 default route is dropped too' => sub {
     like $r->{ip_log}, qr/^-6 route del default$/m, 'the IPv6 default is deleted';
 };
 
-# --- --allow-subnet -----------------------------------------------------------
+# --- --no-lan-filter ----------------------------------------------------------
 
-subtest '--allow-subnet keeps the on-link route but still seals the internet' => sub {
-    my $r = run_helper({ allow_subnet => 1 });
+subtest '--no-lan-filter keeps the on-link route but still seals the internet' => sub {
+    my $r = run_helper({ no_lan_filter => 1 });
     is $r->{exit}, 0, 'launches';
     like $r->{ip_log}, qr/^route del default$/m, 'the internet default is still dropped';
     unlike $r->{ip_log}, qr{route replace 127\.0\.0\.1/32},
@@ -246,17 +246,28 @@ subtest 'a concrete route to the probe address also fails the seal' => sub {
     like $r->{err}, qr/egress seal unverified/, 'the get-probe arm catches it';
 };
 
-# --- non-fatal degradations: reachability and nft are best-effort -------------
+# --- an unreachable proxy is fatal; nft is best-effort ------------------------
 
-subtest 'gateway unreachable after tightening restores the subnet route' => sub {
+subtest 'a proxy unreachable after tightening refuses to launch' => sub {
     my $r = run_helper({ port => dead_port() });   # nothing answers the proxy port
-    is $r->{exit}, 0, 'the seal holds independently, so it still launches';
-    like $r->{err}, qr/gateway unreachable after tightening/, 'warns about reachability';
-    like $r->{err}, qr/restoring the on-link subnet route/, 'restores rather than opening up';
-    like $r->{ip_log}, qr{^route replace 10\.0\.2\.0/24 dev aye0$}m,
-        'the subnet route is put back';
-    like $r->{err}, qr/proxy unreachable after loopback hardening/,
-        'nft hardening backs itself out when it breaks the proxy';
+    is $r->{exit}, 1, 'refuses to launch';
+    like $r->{err}, qr/proxy unreachable at .* after tightening/, 'names the failure';
+    like $r->{err}, qr/--no-net-filter/, 'points at the escape hatch that drops the seal';
+    unlike $r->{err}, qr/--no-lan-filter/,
+        'not at the one that skips this probe and launches anyway';
+    is $r->{out}, '', 'the target never ran';
+    # The /32 already shadows the prefix for gateway traffic, so putting it back
+    # would open the LAN without fixing anything.
+    unlike $r->{ip_log}, qr{^route replace 10\.0\.2\.0/24 dev aye0$}m,
+        'the subnet route is not restored';
+};
+
+subtest 'nft hardening backs itself out when it breaks the proxy' => sub {
+    # --no-lan-filter skips the tightening probe, so the nft one is the first to
+    # see the dead port — which is the reachability check under test here.
+    my $r = run_helper({ no_lan_filter => 1, port => dead_port() });
+    is $r->{exit}, 0, 'still launches — nft is secondary hardening';
+    like $r->{err}, qr/proxy unreachable after loopback hardening/, 'warns';
     like $r->{nft_log}, qr/CMD delete table inet aye_egress/, 'the nft table is removed';
 };
 

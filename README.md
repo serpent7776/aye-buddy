@@ -82,7 +82,7 @@ than being silently forwarded.
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
-| `--allow-subnet` | Keep same-subnet (LAN) hosts reachable under the filter. |
+| `--no-lan-filter` | Let the session reach same-subnet (LAN) hosts directly, around the proxy — see below. |
 | `--allow-reserved` | Let an allowlisted *name* resolve to a loopback or private address. Off by default — see below. |
 | `--allow-ssh` | Forward your SSH agent socket into the session. Off by default — see below. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
@@ -224,6 +224,26 @@ names, and only to addresses DNS produced.
 internal name legitimately resolves into private space. It applies to every
 allowlisted name in the session, so prefer naming the address outright
 where you can.
+
+## `--no-lan-filter` (direct LAN access)
+
+Routing inside the session normally narrows to a single host route to the
+proxy, so LAN hosts have no path at all. `--no-lan-filter` keeps the on-link
+subnet route instead: the session reaches every address on that subnet on a
+raw socket, around the proxy, the allowlist, the port scoping and the DENY
+log. The internet stays unrouted either way — this opens the LAN, nothing
+more — but it is the one unmediated path out of the sandbox, so it is off by
+default.
+
+Reach for it only for traffic the proxy can't carry: UDP, or a protocol that
+negotiates its own ports. A plain TCP service is better named outright with
+`--allow-host 10.0.0.5:5432`, which allowlists that address and port alone.
+The proxy dials it from the host and tunnels it in, with no route from the
+session to the subnet — and since the entry names an address rather than a
+name, [`--allow-reserved`](#--allow-reserved-names-pointing-inward) isn't
+needed either. Clients that don't speak `CONNECT` for themselves need a shim
+in front (`socat TCP-LISTEN:5432,reuseaddr,fork
+PROXY:$GW:10.0.0.5:5432,proxyport=$PORT`).
 
 ## `--allow-bwrap` (nested sandboxing)
 

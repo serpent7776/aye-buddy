@@ -10,7 +10,7 @@
 # Two modes are exercised:
 #   default (tight)   — only the proxy is reachable; internet AND same-subnet
 #                       (LAN) hosts have no route.
-#   --allow-subnet    — the fallback: internet still blocked, but same-subnet
+#   --no-lan-filter   — the opt-out: internet still blocked, but same-subnet
 #                       hosts stay reachable.
 # In both, an allowlisted host must reach the proxy, a non-allowlisted host must
 # get a 403, and raw off-subnet egress (reverse-shell path) must be blocked.
@@ -130,16 +130,16 @@ echo; echo "=== mode: tight (default) — only the proxy is reachable ==="
 EXPECT_LAN=blocked pasta --config-net -- \
     "$netns_seal" "$PROXY_PORT" - -- bash -c "$inner" || status=1
 
-echo; echo "=== mode: --allow-subnet — LAN stays reachable (fallback) ==="
+echo; echo "=== mode: --no-lan-filter — LAN stays reachable (opt-out) ==="
 EXPECT_LAN=reachable pasta --config-net -- \
-    "$netns_seal" "$PROXY_PORT" - --allow-subnet -- bash -c "$inner" || status=1
+    "$netns_seal" "$PROXY_PORT" - --no-lan-filter -- bash -c "$inner" || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
-    echo "RESULT: egress mechanism verified — tight mode blocks the LAN, --allow-subnet keeps it."
+    echo "RESULT: egress mechanism verified — tight mode blocks the LAN, --no-lan-filter keeps it."
 else
-    echo "RESULT: FAILED (exit $status). If only the tight-mode LAN check failed, aye-netns-seal"
-    echo "        may have auto-reverted (look for its warning above) — the /32 gateway route"
-    echo "        did not hold on this host; --allow-subnet is the fallback."
+    echo "RESULT: FAILED (exit $status). If tight mode refused to launch, the /32 gateway route"
+    echo "        did not hold on this host (look for its error above) — report that, and use"
+    echo "        --no-lan-filter meanwhile."
 fi
 exit "$status"

@@ -78,7 +78,8 @@ options:
                             .HOST covers its subdomains too, and without a port
                             only 443 is allowed (repeatable)
   --no-net-filter           turn off egress filtering, use the host network
-  --allow-subnet            keep same-subnet (LAN) hosts reachable
+  --no-lan-filter           let the session reach same-subnet (LAN) hosts
+                            directly, around the proxy
   --allow-reserved          let an allowlisted name resolve to a loopback or
                             private address (for split-horizon DNS)
   --allow-ssh               forward the host SSH agent socket into the session;
@@ -112,9 +113,10 @@ USAGE
 #   --net-filter / --no-net-filter toggles the egress filter (default on). When
 #     on, the session reaches the network only through the bundled proxy, so a
 #     reverse shell has no route out; --no-net-filter falls back to --share-net.
-#   --allow-subnet keeps same-subnet (LAN) hosts reachable under the filter.
-#     Default routing tightens to the proxy only; this is the escape hatch for
-#     workloads that need a LAN host, or setups where tightening is too strict.
+#   --no-lan-filter keeps the on-link subnet route, so the session reaches LAN
+#     hosts on a raw socket, around the proxy and its allowlist. For workloads
+#     the proxy can't carry (UDP, dynamic ports); a TCP service is better named
+#     with --allow-host ADDR:PORT, which tunnels without opening the subnet.
 #   --allow-reserved lets an allowlisted name resolve into loopback/RFC1918 and
 #     still be dialled. Off by default: the proxy connects from the host, outside
 #     the seal, so a rebound name would otherwise reach services the session has
@@ -125,7 +127,7 @@ USAGE
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
-my $allow_subnet = 0;
+my $lan_filter   = 1;
 my $allow_reserved = 0;
 my $allow_ssh    = 0;
 my $agent        = 'claude';
@@ -133,7 +135,7 @@ my ($show_help, $show_version);
 my (@extra_rw, @extra_ro, @extra_hosts);
 my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'net-filter!'   => \$net_filter,
-               'allow-subnet'  => \$allow_subnet,
+               'lan-filter!'   => \$lan_filter,
                'allow-reserved' => \$allow_reserved,
                'allow-ssh'     => \$allow_ssh,
                'agent=s'       => \$agent,
@@ -643,7 +645,7 @@ sub launch_filtered {
     # on some hosts, so we leave pasta's dual-stack default and seal at the routes.
     my @launch = ('pasta', '--config-net', '--quiet', '--log-file', $pasta_log, '--',
                   $^X, $netns_seal, $proxy_port, $blob_arg,
-                  ($allow_subnet ? '--allow-subnet' : ()), '--',
+                  ($lan_filter ? () : '--no-lan-filter'), '--',
                   'bwrap', @args);
     my $sandbox_pid = fork // fail("fork sandbox: $!");
     if ($sandbox_pid == 0) {
