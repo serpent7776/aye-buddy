@@ -83,6 +83,7 @@ than being silently forwarded.
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--allow-subnet` | Keep same-subnet (LAN) hosts reachable under the filter. |
+| `--allow-reserved` | Let an allowlisted *name* resolve to a loopback or private address. Off by default — see below. |
 | `--allow-ssh` | Forward your SSH agent socket into the session. Off by default — see below. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
 | `--help` | Print the flag list and exit. |
@@ -202,6 +203,27 @@ dual-stacked host.
 
 `--no-net-filter` turns all of this off and restores full network access
 — useful for debugging or a workload the allowlist can't express.
+
+## `--allow-reserved` (names pointing inward)
+
+The proxy runs on the host, outside the namespace the session is sealed
+into, so it can reach addresses the session itself has no route to. Passing
+the allowlist is therefore not enough on its own: a name is refused if it
+resolves to loopback, RFC1918, link-local (including the
+`169.254.169.254` metadata address), or other reserved space. Otherwise
+allowlisting a domain whose records you don't fully control — a `.HOST`
+entry especially — would hand the session a tunnel to your own machine or
+LAN, around the seal. The address that passed the check is the one dialled,
+so a second lookup can't answer differently.
+
+Allowlisting an *address* is unaffected: `--allow-host 10.0.0.5:8080` says
+which address you mean, so it is dialled as asked. The rule only applies to
+names, and only to addresses DNS produced.
+
+`--allow-reserved` turns the check off, for split-horizon DNS where an
+internal name legitimately resolves into private space. It applies to every
+allowlisted name in the session, so prefer naming the address outright
+where you can.
 
 ## `--allow-bwrap` (nested sandboxing)
 

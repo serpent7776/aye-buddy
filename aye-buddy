@@ -79,6 +79,8 @@ options:
                             only 443 is allowed (repeatable)
   --no-net-filter           turn off egress filtering, use the host network
   --allow-subnet            keep same-subnet (LAN) hosts reachable
+  --allow-reserved          let an allowlisted name resolve to a loopback or
+                            private address (for split-horizon DNS)
   --allow-ssh               forward the host SSH agent socket into the session;
                             the agent then signs for any host, not just git
   --allow-bwrap             let the session run bwrap itself (nested
@@ -113,6 +115,10 @@ USAGE
 #   --allow-subnet keeps same-subnet (LAN) hosts reachable under the filter.
 #     Default routing tightens to the proxy only; this is the escape hatch for
 #     workloads that need a LAN host, or setups where tightening is too strict.
+#   --allow-reserved lets an allowlisted name resolve into loopback/RFC1918 and
+#     still be dialled. Off by default: the proxy connects from the host, outside
+#     the seal, so a rebound name would otherwise reach services the session has
+#     no route to. An entry naming an address literally works either way.
 #   --allow-ssh forwards $SSH_AUTH_SOCK into the sandbox. Opt-in because an agent
 #     can't scope a signature to one destination: the session can have the host
 #     agent authenticate to anything it can reach, for the session's lifetime.
@@ -120,6 +126,7 @@ Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_c
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
 my $allow_subnet = 0;
+my $allow_reserved = 0;
 my $allow_ssh    = 0;
 my $agent        = 'claude';
 my ($show_help, $show_version);
@@ -127,6 +134,7 @@ my (@extra_rw, @extra_ro, @extra_hosts);
 my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'net-filter!'   => \$net_filter,
                'allow-subnet'  => \$allow_subnet,
+               'allow-reserved' => \$allow_reserved,
                'allow-ssh'     => \$allow_ssh,
                'agent=s'       => \$agent,
                'bind:s'        => \@extra_rw,
@@ -573,7 +581,8 @@ sub spawn_proxy {
         # Perl marks the fd close-on-exec; clear that so the proxy inherits it.
         fcntl($sock, F_SETFD, 0) or POSIX::_exit(127);
         $ENV{AYE_PROXY_ALLOW} = join("\n", @allow_hosts);
-        exec { $^X } $^X, $proxy_helper, '--fd', fileno($sock)
+        exec { $^X } $^X, $proxy_helper, '--fd', fileno($sock),
+             ($allow_reserved ? '--allow-reserved' : ())
             or POSIX::_exit(127);
     }
     return $pid;

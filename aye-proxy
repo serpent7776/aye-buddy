@@ -18,6 +18,13 @@
 # .HOST gives that up for every name under it, and needs two labels so a bare
 # suffix can't hand over a TLD. Everything else gets 403.
 #
+# Clearing the allowlist isn't enough to dial: the connect happens on the host,
+# outside the netns seal the session runs under, so a name pointing into
+# loopback/RFC1918 would reach host or LAN services the sandbox itself can't
+# route to. The resolved address is vetted here and dialled directly, so no
+# second lookup can answer differently. --allow-reserved opts out (split-horizon
+# DNS); an entry naming an address literally is a deliberate choice and stands.
+#
 # The client is an untrusted sandbox, so resource use is bounded: at most
 # AYE_PROXY_MAX_CONNS concurrent tunnels (default 256; excess get 503), plus
 # connect/header/idle timeouts so a stalled peer can't pin a slot indefinitely.
@@ -25,6 +32,7 @@ use strict;
 use warnings;
 use IO::Socket::INET;
 use IO::Select;
+use Socket qw(inet_aton inet_ntoa);
 use Getopt::Long qw(GetOptions);
 use POSIX qw(WNOHANG);
 use Errno qw(EINTR);
@@ -37,8 +45,9 @@ my $CONNECT_TIMEOUT = 10;      # origin connect
 my $HEADER_TIMEOUT  = 30;      # deadline for the whole CONNECT header
 my $IDLE_TIMEOUT    = 1800;    # reap a tunnel idle in both directions
 
-my (@allow, $fd);
-GetOptions('allow=s' => \@allow, 'fd=i' => \$fd)
+my (@allow, $fd, $allow_reserved);
+GetOptions('allow=s' => \@allow, 'fd=i' => \$fd,
+           'allow-reserved' => \$allow_reserved)
     or die "aye-proxy: bad options\n";
 defined $fd or die "aye-proxy: --fd is required\n";
 push @allow, grep { length } split /\n/, ($ENV{AYE_PROXY_ALLOW} // '');
@@ -79,6 +88,56 @@ sub connect_allowed {
     return 0;
 }
 
+# Address space the proxy won't dial: reaching it means talking to the host or
+# the LAN, never the internet the allowlist is about. Network + prefix length.
+my @RESERVED = (
+    ['0.0.0.0',       8],    # this network
+    ['10.0.0.0',      8],    # RFC1918
+    ['100.64.0.0',   10],    # CGNAT
+    ['127.0.0.0',     8],    # loopback
+    ['169.254.0.0',  16],    # link-local, incl. the 169.254.169.254 metadata address
+    ['172.16.0.0',   12],    # RFC1918
+    ['192.0.0.0',    24],    # IETF protocol assignments
+    ['192.0.2.0',    24],    # TEST-NET-1
+    ['192.88.99.0',  24],    # 6to4 relay anycast, deprecated
+    ['192.168.0.0',  16],    # RFC1918
+    ['198.18.0.0',   15],    # benchmarking
+    ['198.51.100.0', 24],    # TEST-NET-2
+    ['203.0.113.0',  24],    # TEST-NET-3, the seal's unroutable probe
+    ['224.0.0.0',     4],    # multicast
+    ['240.0.0.0',     4],    # reserved, incl. 255.255.255.255
+);
+
+sub reserved_addr {
+    my ($ip) = @_;
+    my $packed = inet_aton($ip) or return 1;    # unparseable: refuse it
+    my $n = unpack 'N', $packed;
+    for my $r (@RESERVED) {
+        my ($net, $bits) = @$r;
+        my $mask = 0xffffffff << (32 - $bits) & 0xffffffff;
+        return 1 if ($n & $mask) == (unpack('N', inet_aton($net)) & $mask);
+    }
+    return 0;
+}
+
+# IPv4 only, matching the rest of the egress path (the seal drops IPv6).
+sub resolve_host {
+    my ($h) = @_;
+    my (undef, undef, undef, undef, @addrs) = gethostbyname($h);
+    return map { inet_ntoa($_) } @addrs;
+}
+
+# True if the allowlist names this address itself. Such an entry is the caller
+# asking for that address, so it isn't second-guessed; a '.HOST' entry doesn't
+# count, since it matches on a suffix rather than on an address anyone picked.
+sub named_literally {
+    my ($h) = @_;
+    return 0 unless $h =~ /\A[0-9]+(?:\.[0-9]+){3}\z/;
+    for my $e (@entries) {
+        return 1 if !$e->[2] && $e->[0] eq $h;
+    }
+    return 0;
+}
 
 # A tunnel peer can vanish mid-write; without this, syswrite's SIGPIPE kills the
 # child instead of returning an error pump() can act on.
@@ -134,8 +193,26 @@ sub handle {
         return reply($client, 403, 'Blocked by allowlist');
     }
 
+    # Vet the address before dialling, and dial the one we vetted: resolving
+    # again inside IO::Socket::INET would let a second answer differ from the
+    # one that passed. Every answer has to pass — a rebound name can return a
+    # public address alongside the internal one, and ordering isn't ours to
+    # depend on.
+    my $ip = $host;
+    unless ($allow_reserved || named_literally($host)) {
+        my @addrs = resolve_host($host);
+        return reply($client, 502, 'Bad Gateway') unless @addrs;
+        # Log the offending answer, which needn't be the one we'd have dialled.
+        if (my ($bad) = grep { reserved_addr($_) } @addrs) {
+            warn "aye-proxy: DENY ", ascii_sanitise("$host:$dport"),
+                 " -> $bad (reserved address)\n";
+            return reply($client, 403, 'Blocked by allowlist');
+        }
+        $ip = $addrs[0];
+    }
+
     my $origin = IO::Socket::INET->new(
-        PeerHost => $host, PeerPort => $dport, Proto => 'tcp',
+        PeerHost => $ip, PeerPort => $dport, Proto => 'tcp',
         Timeout => $CONNECT_TIMEOUT,
     );
     return reply($client, 502, 'Bad Gateway') unless $origin;

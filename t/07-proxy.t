@@ -71,21 +71,24 @@ sub listener {
 # supervisor does.
 sub start_proxy_on_fd {
     my ($srv, @allow) = @_;
+    my @flags = ref $allow[0] eq 'ARRAY' ? @{ shift @allow } : ();
     my $pid = fork // die "fork: $!";
     if ($pid == 0) {
         open STDOUT, '>', '/dev/null';
         open STDERR, '>', '/dev/null';    # keep the proxy's DENY warns out of prove
         fcntl($srv, F_SETFD, 0) or die "F_SETFD: $!";
-        exec $^X, $PROXY, '--fd', fileno($srv), map { ('--allow', $_) } @allow;
+        exec $^X, $PROXY, '--fd', fileno($srv), @flags,
+             map { ('--allow', $_) } @allow;
         die "exec proxy: $!";
     }
     push @kids, $pid;
     return $pid;
 }
 
-# Start aye-proxy with the given allow entries; return its listening port.
-# Clients need not wait for the proxy to come up: the socket is bound before
-# the fork, so early connections queue in the backlog.
+# Start aye-proxy with the given allow entries; return its listening port. A
+# leading arrayref passes extra proxy flags. Clients need not wait for the proxy
+# to come up: the socket is bound before the fork, so early connections queue in
+# the backlog.
 sub start_proxy {
     my @allow = @_;
     my $srv = listener();
@@ -151,9 +154,40 @@ subtest 'a subdomain of an allowlisted host is refused' => sub {
 };
 
 subtest 'an allowlisted hostname tunnels through' => sub {
-    my $pport = start_proxy("localhost:$origin");
+    # 'localhost' resolves into reserved space, so this needs --allow-reserved
+    # to reach the tunnel at all; what it asserts is the name match itself.
+    my $pport = start_proxy(['--allow-reserved'], "localhost:$origin");
     my ($s, $status) = connect_via($pport, "localhost:$origin");
     like $status, qr{^HTTP/1\.1 200 }, 'exact hostname match allowed';
+    close $s;
+};
+
+subtest 'an allowlisted name resolving to loopback is refused' => sub {
+    # The connect happens on the host, outside the netns seal, so a name that
+    # points into reserved space reaches services the session has no route to.
+    # Clearing the allowlist is not enough; the address has to pass too.
+    my $pport = start_proxy("localhost:$origin");
+    my ($s, $status) = connect_via($pport, "localhost:$origin");
+    like $status, qr{^HTTP/1\.1 403 }, 'reserved address blocked despite the match';
+    close $s;
+};
+
+subtest 'an address named literally is still dialled' => sub {
+    # Allowlisting an address outright is the caller asking for it, so the
+    # reserved-range rule doesn't second-guess it. Without this carve-out
+    # --allow-host 10.0.0.5:8080 would stop working.
+    my $pport = start_proxy("127.0.0.1:$origin");
+    my ($s, $status) = connect_via($pport, "127.0.0.1:$origin");
+    like $status, qr{^HTTP/1\.1 200 }, 'literal entry not subject to the rule';
+    close $s;
+};
+
+subtest 'a .HOST entry does not make an address literal' => sub {
+    # '.0.0.1' matches '127.0.0.1' on the suffix, but nobody picked that address
+    # by hand, so the carve-out must not apply to it.
+    my $pport = start_proxy(".0.0.1:$origin");
+    my ($s, $status) = connect_via($pport, "127.0.0.1:$origin");
+    like $status, qr{^HTTP/1\.1 403 }, 'suffix match gets no carve-out';
     close $s;
 };
 

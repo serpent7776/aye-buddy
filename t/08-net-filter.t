@@ -55,6 +55,21 @@ subtest 'routing tightens by default; --allow-subnet opts out' => sub {
         '--allow-subnet does not leak into the claude payload';
 };
 
+subtest '--allow-reserved is ours, not claude\'s' => sub {
+    # It reaches aye-proxy, which this harness doesn't capture (the proxy is
+    # forked, not exec'd through the stub), so assert the parsing half: the flag
+    # is accepted and does not end up in the payload claude sees.
+    my $r = run_aye('--allow-reserved');
+    is $r->{exit}, 0, 'exits 0';
+    my @after_claude = do {
+        my @a = @{$r->{argv}};
+        my ($ci) = grep { $a[$_] eq 'claude' } 0 .. $#a;
+        defined $ci ? @a[$ci .. $#a] : ();
+    };
+    ok !(grep { $_ eq '--allow-reserved' } @after_claude),
+        '--allow-reserved does not leak into the claude payload';
+};
+
 subtest 'a missing ip is caught up front, and only when filtering' => sub {
     my $r = run_aye({ no_ip => 1 });
     is $r->{exit}, 1, 'refuses to launch';
