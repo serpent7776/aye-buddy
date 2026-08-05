@@ -81,12 +81,14 @@ for (1 .. 8) {
 # device, so the prefix was already shadowed for gateway traffic. Restoring it
 # would hand the session the LAN to cover for a proxy path that stays broken.
 unless ($no_lan_filter) {
-    system('ip', 'route', 'replace', "$gwaddr/32", 'dev', $ifc);
+    # Delete first, add after: an interrupted tightening then leaves no route
+    # rather than the LAN open, and nothing here can delete the host route it
+    # just installed. The /32 is scope-link, so it needs no covering prefix.
     for my $r (@link) {
         my ($pfx) = split ' ', $r;
-        system('ip', 'route', 'del', $pfx, 'dev', $ifc)
-            if $pfx && $pfx ne "$gwaddr/32";
+        system('ip', 'route', 'del', $pfx, 'dev', $ifc) if $pfx;
     }
+    system('ip', 'route', 'replace', "$gwaddr/32", 'dev', $ifc);
     # Don't point at --no-lan-filter here: by the same argument the proxy path is
     # broken for a reason keeping the subnet route won't mend, and that flag skips
     # this probe, so it would trade a clear failure for a session that launches
