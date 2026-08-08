@@ -16,9 +16,11 @@
 #      host-loopback mapping can't expose other 127.0.0.1 host services) and
 #      dropping all IPv6 egress — the proxy is IPv4-only, so no v6 path out (the
 #      loopback mapping or a link-local gateway) is ever legitimate.
-#   2. rewrites @@AYE_PROXY@@ in the target argv to the proxy URL and exports
-#      HTTP(S)_PROXY, so both bwrap's --setenv values and plain clients pick it
-#      up.
+#   2. rewrites the @@AYE_PROXY@@ that follows a proxy --setenv in the target
+#      argv to the proxy URL (a bare match is left alone: it may be a variable
+#      the user asked aye-buddy to carry through) and exports HTTP(S)_PROXY, so
+#      both bwrap's --setenv values and plain clients pick it up. A target that
+#      clears its own environment and offers nothing to rewrite is refused.
 #   3. arms the seccomp blob and splices its fd into `bwrap --seccomp` — pasta
 #      need not preserve inherited fds across exec, so we own that fd here.
 # then execs the target (bwrap, or in the test harness a probe command).
@@ -182,10 +184,22 @@ NFT
 }
 
 # Point clients at the proxy (reached via the gateway, which pasta maps to the
-# host where aye-proxy listens).
+# host where aye-proxy listens). Only the value of a proxy --setenv is rewritten,
+# never a bare match: aye-buddy can carry a user's own env var through, and its
+# value must reach the session as the user wrote it.
+my %proxy_var = map { $_ => 1 } qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy);
 my $url = "http://$gwaddr:$port";
-$_ eq PROXY_TOKEN and $_ = $url for @cmd;
+my $rewritten = 0;
+for my $i (0 .. $#cmd - 2) {
+    next unless $cmd[$i] eq '--setenv' && $proxy_var{$cmd[$i + 1]}
+             && $cmd[$i + 2] eq PROXY_TOKEN;
+    $cmd[$i + 2] = $url;
+    $rewritten++;
+}
 $ENV{$_} = $url for qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy);
+
+$rewritten || !grep { $_ eq '--clearenv' } @cmd
+    or die_h("no proxy placeholder found in the sandbox argv");
 
 # $keep stays in scope until exec so the fd survives into bwrap.
 my $keep;

@@ -118,7 +118,8 @@ sub run_helper {
         $o->{port} // $LPORT,
         $o->{seccomp} // '-',
         ($o->{no_lan_filter} ? ('--no-lan-filter') : ()),
-        '--', "$bin/probe", @{$o->{probe_args} // ['@@AYE_PROXY@@']},
+        '--', "$bin/probe",
+        @{$o->{probe_args} // ['--setenv', 'HTTPS_PROXY', '@@AYE_PROXY@@']},
     );
 
     my ($outf, $errf) = ("$root/out", "$root/err");
@@ -203,6 +204,36 @@ subtest 'default launch: seal holds, routing tightens, proxy is injected' => sub
     like $r->{nft_log}, qr/ip daddr 127\.0\.0\.1 tcp dport $LPORT accept/,
         'nft allows only the proxy port on the gateway';
     like $r->{nft_log}, qr/meta nfproto ipv6 drop/, 'nft drops all IPv6 egress';
+};
+
+subtest 'the proxy rewrite is anchored to our own --setenv' => sub {
+    # aye-buddy can carry a user's env var through (--keep-env), so a value that
+    # merely looks like the placeholder must reach the session as they wrote it.
+    my $tok = '@@AYE_PROXY@@';
+    my $r = run_helper({ probe_args => ['--setenv', 'HTTPS_PROXY', $tok,
+                                        '--setenv', 'MINE', $tok, $tok] });
+    is $r->{exit}, 0, 'execs the target';
+    my $url = "http://127.0.0.1:$LPORT";
+    like $r->{out}, qr/^ARG\t\Q$url\E$/m, 'our own placeholder becomes the URL';
+    my @survived = $r->{out} =~ /^ARG\t\Q$tok\E$/mg;
+    is scalar @survived, 2, 'the kept value and the bare token are left alone';
+};
+
+subtest 'a --clearenv target with no placeholder to rewrite is refused' => sub {
+    # bwrap --clearenv drops the exported vars, so the argv is that session's
+    # only route to the proxy: nothing to rewrite means the shape drifted, and
+    # a literal placeholder for a proxy URL fails as if the allowlist were at
+    # fault. A plain child still has the env, so it launches (t/manual runs one).
+    my $r = run_helper({ probe_args => ['--clearenv', 'plain-arg'] });
+    is $r->{exit}, 1, 'refuses to launch';
+    like $r->{err}, qr/no proxy placeholder/, 'says what was missing';
+    unlike $r->{out}, qr/^ARG/m, 'the target never ran';
+
+    my $url   = "http://127.0.0.1:$LPORT";
+    my $plain = run_helper({ probe_args => ['plain-arg'] });
+    is $plain->{exit}, 0, 'a child that keeps its environment still launches';
+    like $plain->{out}, qr/^ENV\tHTTPS_PROXY\t\Q$url\E$/m,
+        'and picks the proxy up from the exported vars';
 };
 
 subtest 'a surviving IPv6 default route is dropped too' => sub {
