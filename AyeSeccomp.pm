@@ -13,7 +13,9 @@ use constant SECCOMP_FD_TOKEN => '@@AYE_SECCOMP_FD@@';
 use constant PROXY_TOKEN      => '@@AYE_PROXY@@';
 
 # Open the blob, clear close-on-exec (Perl opens fds cloexec) so the fd survives
-# the exec into bwrap, and rewrite SECCOMP_FD_TOKEN in @$argv to that fd number.
+# the exec into bwrap, and rewrite the SECCOMP_FD_TOKEN that follows --seccomp in
+# @$argv to that fd number. Anchored on the flag rather than scanning for the
+# token, so a --setenv value that happens to equal it can't take the rewrite.
 # Returns the open handle: keep it in scope until exec or the kernel closes the
 # fd out from under bwrap. Dies with a trailing newline (so callers get a clean
 # message, no "at line" noise) if the blob can't be opened or prepared.
@@ -24,9 +26,10 @@ sub arm_seccomp {
     defined $flags or die "F_GETFD on seccomp blob: $!\n";
     fcntl($fh, F_SETFD, $flags & ~FD_CLOEXEC) or die "clear cloexec on seccomp blob: $!\n";
     my $fd = fileno($fh);
-    for (@$argv) {
-        next unless $_ eq SECCOMP_FD_TOKEN;
-        $_ = $fd;
+    for my $i (0 .. $#$argv - 1) {
+        next unless $argv->[$i] eq '--seccomp'
+                 && $argv->[$i + 1] eq SECCOMP_FD_TOKEN;
+        $argv->[$i + 1] = $fd;
         return $fh;
     }
     die "seccomp fd placeholder not found in argv\n";

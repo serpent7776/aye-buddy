@@ -30,16 +30,22 @@ subtest 'arm_seccomp: splices the fd into the argv and clears close-on-exec' => 
         'a missing blob dies with a clear message';
 };
 
-subtest 'arm_seccomp: only the first token is rewritten; missing token dies' => sub {
+subtest 'arm_seccomp: only the token after --seccomp is rewritten; missing token dies' => sub {
     my $blob = "$FindBin::RealBin/../filter.bpf";
-    # A payload arg equal to the sentinel must survive as the user's own value.
-    my @argv = ('--seccomp', SECCOMP_FD_TOKEN, '--', 'claude', SECCOMP_FD_TOKEN);
+    # A payload arg or an env value equal to the sentinel must survive as the
+    # user's own value, whichever side of the flag it sits on: the rewrite is
+    # anchored to --seccomp, not to the first match in the argv.
+    my @argv = ('--setenv', 'FOO', SECCOMP_FD_TOKEN,
+                '--seccomp', SECCOMP_FD_TOKEN, '--', 'claude', SECCOMP_FD_TOKEN);
     my $fh = arm_seccomp(\@argv, $blob);
-    is $argv[1], fileno($fh), 'the planted token becomes the fd';
-    is $argv[4], SECCOMP_FD_TOKEN, 'a payload arg equal to the sentinel is left alone';
+    is $argv[4], fileno($fh), 'the planted token becomes the fd';
+    is $argv[2], SECCOMP_FD_TOKEN, 'an env value ahead of the flag is left alone';
+    is $argv[7], SECCOMP_FD_TOKEN, 'a payload arg equal to the sentinel is left alone';
 
     like dies { arm_seccomp(['--other'], $blob) }, qr/placeholder not found/,
         'no token to rewrite dies loudly rather than passing a literal to bwrap';
+    like dies { arm_seccomp([SECCOMP_FD_TOKEN, '--seccomp'], $blob) },
+        qr/placeholder not found/, 'a stray token is not mistaken for the real one';
 };
 
 subtest 'token is the documented placeholder' => sub {
