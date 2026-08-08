@@ -81,6 +81,7 @@ than being silently forwarded.
 | `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
+| `--keep-env NAME` | Pass one environment variable through into the session instead of clearing it. Repeatable — see below. |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--no-lan-filter` | Let the session reach same-subnet (LAN) hosts directly, around the proxy — see below. |
 | `--allow-reserved` | Let an allowlisted *name* resolve to a loopback or private address. Off by default — see below. |
@@ -114,7 +115,7 @@ keeps working.
 **Forwarded:** the filtered network, a minimal set of environment
 variables, and — only with `--allow-ssh` — your SSH agent socket. Every
 other env var, API tokens and cloud credentials included, is cleared so it
-can't leak in.
+can't leak in; name one with `--keep-env` to carry it through.
 
 **Not visible at all:** `~/.ssh` private keys, `~/.aws`, `~/.config/gcloud`,
 `~/.kube`, `~/.netrc`, browser profiles, password stores, other projects,
@@ -267,6 +268,29 @@ authenticate to *any* host it can reach, not only the git remote you had in
 mind. Under the egress filter that's a short list — reaching an SSH host at
 all needs `--allow-host` plus a `ProxyCommand` — but the capability is
 wider than the use, so it's a deliberate choice rather than a default.
+
+## `--keep-env` (passing a variable through)
+
+The session starts from an empty environment: aye-buddy sets `HOME`,
+`USER`, `PATH`, `TERM`, the locale vars and the cache pointers, and nothing
+else survives. That's what keeps `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`
+and the rest of your shell's environment out of reach.
+
+`--keep-env NAME` carries one variable in with its host value:
+
+```
+aye-buddy --keep-env RUSTFLAGS --keep-env MAKEFLAGS
+```
+
+It takes a single name, not a `NAME=VALUE` pair, and it's repeatable. Whether
+the value is a secret is your call: aye-buddy passes it through verbatim.
+
+One caveat if it is one: the value travels as a `bwrap --setenv` argument, so
+it's in the sandbox process's command line and any other user on the host can
+read it out of `ps` for as long as the session runs. bwrap can take its whole
+argv from a file descriptor instead (`--args FD`), which would keep it off the
+command line, but aye-buddy doesn't do that today. On a machine you share, keep
+secrets out of `--keep-env`.
 
 ## Limitations
 

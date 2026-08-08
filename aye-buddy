@@ -77,6 +77,8 @@ options:
   --allow-host HOST[:PORT]  add a host to the egress allowlist, matched exactly;
                             .HOST covers its subdomains too, and without a port
                             only 443 is allowed (repeatable)
+  --keep-env NAME           pass this environment variable through into the
+                            session instead of clearing it (repeatable)
   --no-net-filter           turn off egress filtering, use the host network
   --no-lan-filter           let the session reach same-subnet (LAN) hosts
                             directly, around the proxy
@@ -121,6 +123,11 @@ USAGE
 #     still be dialled. Off by default: the proxy connects from the host, outside
 #     the seal, so a rebound name would otherwise reach services the session has
 #     no route to. An entry naming an address literally works either way.
+#   --keep-env NAME carries one host env var into the session. Everything is
+#     cleared by default (--clearenv), so this is the escape hatch for a var a
+#     toolchain needs; each one is also a way for host secrets to reach the
+#     session, hence one name at a time rather than a pattern. Names aye-buddy
+#     manages itself are refused instead of silently losing to ours.
 #   --allow-ssh forwards $SSH_AUTH_SOCK into the sandbox. Opt-in because an agent
 #     can't scope a signature to one destination: the session can have the host
 #     agent authenticate to anything it can reach, for the session's lifetime.
@@ -132,7 +139,7 @@ my $allow_reserved = 0;
 my $allow_ssh    = 0;
 my $agent        = 'claude';
 my ($show_help, $show_version);
-my (@extra_rw, @extra_ro, @extra_hosts);
+my (@extra_rw, @extra_ro, @extra_hosts, @keep_env);
 my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'net-filter!'   => \$net_filter,
                'lan-filter!'   => \$lan_filter,
@@ -142,6 +149,7 @@ my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'bind:s'        => \@extra_rw,
                'bind-ro:s'     => \@extra_ro,
                'allow-host:s'  => \@extra_hosts,
+               'keep-env:s'    => \@keep_env,
                'help'          => \$show_help,
                'version'       => \$show_version);
 GetOptions(%opt_spec) or fail("invalid aye-buddy option");
@@ -215,6 +223,55 @@ sub validate_allow_host {
     return $host;
 }
 @extra_hosts = map { validate_allow_host($_) } @extra_hosts;
+
+# Env vars aye-buddy manages itself: the sandbox identity and paths, the proxy
+# pointers, the toolchain cache redirections (XDG_CACHE_HOME picks the host dir
+# we bind at ~/.cache; kept, it would send every XDG-respecting tool to the
+# tmpfs instead), the Landlock lists, the forwarded agent socket, and whatever
+# the agent entry injects. A --keep-env for one of these would either lose to
+# ours or quietly break the layer it belongs to, so name one and get told rather
+# than guess which won.
+my %reserved_env = map { $_ => 1 } (
+    qw(HOME USER LOGNAME PATH PWD
+       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK
+       XDG_CACHE_HOME npm_config_cache CARGO_HOME GOPATH),
+    # Only set when the egress filter is on; without it the session is on the
+    # host network and a kept proxy var is the only way to point it at one. The
+    # bypass vars go with them: a kept no_proxy=* sends clients around the proxy
+    # to a netns with no route, which reads as the allowlist refusing the host.
+    ($net_filter ? qw(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy
+                      ALL_PROXY all_proxy NO_PROXY no_proxy) : ()),
+    keys %{$agent_spec->{env}},
+);
+# Loader and interpreter search paths. Not ours to set, but the Landlock ruleset
+# is armed by a perl process (aye-landlock) that runs before the agent does, so
+# one of these pointing into the project — which the session can write — gets
+# code run ahead of the ruleset, and that code can just exec the agent with no
+# ruleset at all. Refused rather than warned about: keeping one buys nothing the
+# session can't do for itself (export it before the command that needs it), and
+# the only thing it adds is reaching aye-buddy's own helper.
+# GCONV_PATH belongs here too: glibc dlopens conversion modules from it, so the
+# first iconv call in the helper loads code from a directory of the caller's
+# choosing. LOCPATH/NLSPATH name data, not code, and stay out.
+my %preload_env = map { $_ => 1 } qw(PERL5LIB PERLLIB PERL5OPT
+                                     LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH
+                                     GCONV_PATH);
+
+sub validate_keep_env {
+    my ($name) = @_;
+    length $name or fail("--keep-env requires a NAME argument");
+    $name =~ /\A[A-Za-z_][A-Za-z0-9_]*\z/
+        or fail("--keep-env: invalid variable name (want NAME, not NAME=VALUE): "
+              . printable($name));
+    # Use the same error message for both, without revealing source
+    $reserved_env{$name} || $preload_env{$name}
+        and fail("--keep-env: $name is part of aye-buddy's own setup and can't be kept");
+    return $name;
+}
+{
+    my %seen;
+    @keep_env = grep { !$seen{$_}++ } map { validate_keep_env($_) } @keep_env;
+}
 
 # --- Network egress policy ------------------------------------------------
 # The canonical allowlist of hosts a session may reach. The filtering layer
@@ -438,6 +495,17 @@ for my $var (qw(LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC LC_TIME LC_COLLATE
                 LC_MONETARY COLORTERM NO_COLOR)) {
     my $val = $ENV{$var};
     push @args, '--setenv', $var, $val if defined $val && length $val;
+}
+# --keep-env, after the vars we forward ourselves so a name that appears in both
+# (TERM, LC_*) keeps its host value rather than the fallback. An unset one is a
+# typo more often than intent.
+for my $var (@keep_env) {
+    my $val = $ENV{$var};
+    if (!defined $val) {
+        warning("--keep-env: $var is not set in the environment; nothing kept");
+        next;
+    }
+    push @args, '--setenv', $var, $val;
 }
 
 # Hand aye-landlock the permitted paths (newline-separated) accumulated above. Once
