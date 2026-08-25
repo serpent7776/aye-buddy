@@ -99,18 +99,31 @@ stack traces open correctly in your editor.
 
 ## What the session can see
 
-**Read-write:** the project root (only this one), most of `~/.claude/`
-(so `--continue` and history work), `~/.claude.json`, and a cache directory
-of aye-buddy's own (see [Caches](#caches)).
+**Read-write:** the project root (only this one), this project's transcript
+dir under `~/.claude/projects/`, `~/.claude/.credentials.json`,
+`~/.claude.json`, and a cache directory of aye-buddy's own (see
+[Caches](#caches)).
 
 **Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git and
 SSH *config* (`~/.gitconfig`, `~/.ssh/config`, `~/.ssh/known_hosts`); the
 project's `.git/hooks`, `.git/config`, `.git/modules`; and the parts of
-`~/.claude/` that could inject code into a later host-side `claude` run
-(`settings.json`, `commands/`, `agents/`, `plugins/`, `hooks/`,
-`scripts/`, `mcp.json`). Config that a session shouldn't be able to change
-under you stays read-only; the rest is writable so Claude's own state
-keeps working.
+`~/.claude/` that a later host-side `claude` run would act on —
+`settings.json`, `settings.local.json`, `CLAUDE.md`, `commands/`,
+`agents/`, `skills/`, `output-styles/`, `plugins/`, `hooks/`, `scripts/`,
+`mcp.json`, `.mcp.json`, `statusline-command.sh`. Slash commands, agents,
+skills, hooks and statusline scripts living there work inside the sandbox,
+and a session can't rewrite them for the next run outside it.
+
+The rest of `~/.claude/` is **not mounted at all**: the session gets an
+empty directory with only the paths above bound into it. Other projects'
+transcripts, `history.jsonl`, `file-history/`, `debug/` and `paste-cache/`
+are unreachable, and so is anything a future `claude` version adds — an
+unlisted path is sandbox-local rather than writable in your real home.
+
+That includes your own scripts sitting directly in `~/.claude/`: a hook
+command pointing at `~/.claude/foo.sh` gets ENOENT inside the sandbox.
+Keep them in `~/.claude/hooks/` or `~/.claude/scripts/`; anywhere else in
+`$HOME` needs `--bind-ro`.
 
 **Forwarded:** the filtered network, a minimal set of environment
 variables, and — only with `--allow-ssh` — your SSH agent socket. Every
@@ -304,10 +317,36 @@ secrets out of `--keep-env`.
 - **Some in-session config writes fail.** Settings that `claude` persists
   to `~/.claude/settings.json` (e.g. `/effort`) error because that file is
   read-only in the sandbox. Set them on the host beforehand, or pass them
-  per invocation.
-- **`~/.claude` is shared with host-run sessions.** A session in project A
-  can read transcripts from project B under `~/.claude/projects/`. Accepted
-  trade for unified history.
+  per invocation. `/statusline` fails for the same reason, and its script
+  would land in the tmpfs anyway — configure it on the host, under
+  `~/.claude/scripts/`.
+- **Some `~/.claude` state doesn't persist.** Only this project's transcript
+  dir is bound back, so prompt history (`history.jsonl`), file history and
+  anything a newer `claude` keeps elsewhere under `~/.claude/` lives in the
+  sandbox tmpfs and is gone at exit. `--continue` and `--resume` still work
+  for this project. If `claude` changes how it names those transcript dirs,
+  aye-buddy warns at startup rather than losing them silently.
+- **The credentials file is readable *and* writable in-session.** `claude`
+  needs the OAuth token and has to be able to rewrite it on refresh, so the
+  file is bound read-write; a payload runs under the same uid, so it can read
+  the token — and replace it with one of its own, which a later host-side
+  `claude` would then authenticate with. Closing the read would mean
+  terminating TLS for `api.anthropic.com` at the proxy, against the
+  no-interception design.
+- **A host-side token refresh doesn't reach a running session.** The bind
+  pins the file as it was at launch, and `claude` replaces it wholesale on
+  refresh, so a rotation done on the host while a sandbox is up leaves that
+  session holding a token the host has already retired. Writes go the other
+  way fine — an in-session refresh or login lands on the host file, and
+  aye-buddy creates an empty one first if you've never logged in. Don't run
+  a host-side `claude` alongside a sandboxed one; restart the sandbox if you
+  do.
+- **API-key auth means the session can read *and* rewrite the key.** A
+  `/login`-managed key lives in `~/.claude.json`, which is bound read-write
+  so `claude` can keep its own state. Reading it is unavoidable — billing
+  against a key requires the key to be present — but the same file holds
+  `customApiKeyResponses.approved`, so a payload under the same uid can also
+  pre-approve a key of its own for later host runs. Prefer an OAuth login.
 
 ## Tests
 

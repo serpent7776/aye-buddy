@@ -112,4 +112,94 @@ subtest 'caches persist in our own dir, not the host ones' => sub {
     like $env{GOPATH},           qr{/\.cache/go\z}, 'GOPATH redirected';
 };
 
+# ~/.claude is an allowlist, not a rw bind with ro patches over it: nothing under
+# it exists in the sandbox unless it is named. A regression here is invisible at
+# runtime (claude works fine either way) and hands a session the host's config
+# dir, so assert the shape rather than the individual entries.
+subtest '~/.claude is not bound wholesale' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
+    ok !(grep { $_->[1] =~ m{/\.claude\z} } @rw),
+        'no rw bind of the ~/.claude dir itself';
+
+    my %env = do {
+        my @a = @{$r->{argv}};
+        map { $a[$_ + 1] => $a[$_ + 2] } grep { $a[$_] eq '--setenv' } 0 .. $#a - 2;
+    };
+    my ($project) = map { $_->[1] } grep { $_->[1] eq $_->[0] && $_->[1] =~ m{/repo\z} } @rw;
+    ok $project, 'the project dir is bound rw';
+
+    # Only this project's transcript dir comes back, under claude's own naming.
+    my @projects = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
+    is scalar(@projects), 1, 'exactly one transcript dir is writable';
+    like $projects[0][1], qr{\A\Q$env{HOME}/.claude/projects/\E-.*-repo\z},
+        'and it is this project\'s';
+};
+
+# The slug rule belongs to claude, so pin the name a known directory has to
+# produce. Deriving the expectation with the implementation's own regex would
+# follow any future change to it, including a wrong one.
+subtest 'the transcript dir name follows claude\'s slug rule' => sub {
+    my $r = run_aye({ repo_name => 'My Proj..v2_x' });
+    is $r->{exit}, 0;
+    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
+    my ($projects) = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
+    ok $projects, 'a transcript dir is bound';
+
+    my ($slug) = $projects->[1] =~ m{/\.claude/projects/(.+)\z};
+    like $slug, qr/\A-/, 'the leading separator becomes a dash';
+    like $slug, qr/\Q-My-Proj--v2-x\E\z/,
+        'one dash per non-alphanumeric, runs kept, case preserved';
+};
+
+subtest 'the exec-bearing ~/.claude paths come back read-only' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my %ro = map { $_->[1] => 1 } bwrap_binds($r->{argv}, '--ro-bind-try');
+    my ($home) = map { $r->{argv}[$_ + 2] }
+                 grep { $r->{argv}[$_] eq '--setenv' && $r->{argv}[$_ + 1] eq 'HOME' }
+                 0 .. $#{$r->{argv}} - 2;
+    # Each of these is loaded by a later host-side claude — as a command it runs,
+    # or as text it puts in the model's context.
+    ok $ro{"$home/.claude/$_"}, "$_ is ro" for qw(
+        settings.json settings.local.json CLAUDE.md
+        commands agents skills output-styles plugins hooks scripts
+        mcp.json .mcp.json statusline-command.sh
+    );
+
+};
+
+# A bind needs its source to exist, and an OAuth login in-session writes through
+# it to the host inode — so an absent credentials file is created, not skipped.
+# Losing this silently means logging in again on every run.
+subtest 'the credentials file is created and bound rw' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my $creds = "$r->{root}/home/.claude/.credentials.json";
+    ok -e $creds, 'created on the host when absent';
+    my @st = stat $creds;
+    is $st[7], 0, 'empty, so claude reads it back as logged out';
+    is sprintf('%04o', $st[2] & oct('7777')), '0600',
+        'and not readable by other users';
+
+    my @rw = bwrap_binds($r->{argv}, '--bind');
+    ok +(grep { $_->[0] eq $creds && $_->[1] eq $creds } @rw),
+        'bound rw at the same path';
+};
+
+# config.json is a stale copy of credentials claude no longer reads, so no run
+# has a reason to mount it.
+subtest 'config.json stays out of the session' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my ($home) = map { $r->{argv}[$_ + 2] }
+                 grep { $r->{argv}[$_] eq '--setenv' && $r->{argv}[$_ + 1] eq 'HOME' }
+                 0 .. $#{$r->{argv}} - 2;
+    my @mounts = grep { $_->[1] eq "$home/.claude/config.json" }
+                 map  { bwrap_binds($r->{argv}, $_) }
+                 qw(--bind --bind-try --ro-bind --ro-bind-try);
+    is scalar(@mounts), 0, 'not mounted under any flag';
+};
+
 done_testing;

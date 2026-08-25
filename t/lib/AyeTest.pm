@@ -29,22 +29,25 @@ sub _stub {
     chmod 0755, $path or die "chmod $path: $!";
 }
 
-# run_aye(@argv) -> hashref { out, err, exit, argv }
+# run_aye(@argv) -> hashref { out, err, exit, argv, root }
 #   out/err : captured stdout/stderr of aye-buddy (the stub bwrap prints to out)
 #   exit    : exit status (0 on a successful exec of the stub)
 #   argv    : the stub bwrap's argv as an arrayref (aye-buddy's constructed call)
+#   root    : the temp world, for asserting on what the run left on the "host"
 # An optional leading hashref sets options; { no_repo => 1 } omits the .git marker
 # so the run happens outside any repo, { no_ip => 1 } drops the ip stub so the
 # net-filter dependency check can be exercised, { ssh_sock => 1 } listens on a
-# unix socket and points SSH_AUTH_SOCK at it (aye-buddy requires a real -S path).
+# unix socket and points SSH_AUTH_SOCK at it (aye-buddy requires a real -S path),
+# { repo_name => NAME } names the repo dir something other than `repo`.
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
 
     my $root = tempdir(CLEANUP => 1);
+    my $repo = $opts->{repo_name} // 'repo';
     make_path("$root/home/.claude", "$root/bin");
-    make_path("$root/repo/.git") unless $opts->{no_repo};
-    make_path("$root/repo");
+    make_path("$root/$repo/.git") unless $opts->{no_repo};
+    make_path("$root/$repo");
 
     # Stub bwrap/pasta dump their argv; stub claude is only reached if real.
     # With egress filtering on (the default) aye-buddy execs pasta, whose argv
@@ -76,7 +79,7 @@ sub run_aye {
         # Deterministic bwrap argv: no host agent unless a test asks for one.
         if ($agent_sock) { $ENV{SSH_AUTH_SOCK} = "$root/agent.sock" }
         else             { delete $ENV{SSH_AUTH_SOCK} }
-        chdir "$root/repo" or die "chdir: $!";
+        chdir "$root/$repo" or die "chdir: $!";
         open my $o, '>', $outf or die $!;
         open my $e, '>', $errf or die $!;
         dup2(fileno($o), 1) or die $!;
@@ -94,6 +97,7 @@ sub run_aye {
         err  => $err,
         exit => $exit,
         argv => [ split /\n/, $out ],
+        root => $root,
     };
 }
 
