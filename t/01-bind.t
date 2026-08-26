@@ -152,8 +152,10 @@ subtest 'an uncreatable transcript dir is a warning, not a refusal' => sub {
     like $r->{err}, qr/cannot create the session transcript dir/, 'says so';
     like $r->{err}, qr/will not persist/, 'and what it costs';
     my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
-    ok !(grep { $_->[1] =~ m{/\.claude/projects/} } @rw), 'no transcript dir is bound';
-    ok !(grep { $_->[1] =~ m{/\.claude/projects\z} } @rw), 'and projects/ itself is not';
+    my @tr = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
+    is scalar(@tr), 1, 'the transcript bind is still requested';
+    ok !-e $tr[0][0], 'as bind-try, with no source for it to find';
+    ok !(grep { $_->[1] =~ m{/\.claude/projects\z} } @rw), 'and projects/ itself is not bound';
 };
 
 # The cache dir is what backs $HOME/.cache in the sandbox, so failing to create

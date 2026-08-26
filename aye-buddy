@@ -424,7 +424,6 @@ if (@$mkerr || !-d $transcript_dir) {
     warning("cannot create the session transcript dir " . printable($transcript_dir)
           . ($msg ? ":\n  " . printable($msg) : '')
           . "\n  session transcripts will not persist across runs");
-    undef $transcript_dir;
 }
 # A relative XDG_CACHE_HOME is invalid per the spec; ignore it
 my $xdg_cache = $ENV{XDG_CACHE_HOME};
@@ -451,6 +450,7 @@ unless (-e $creds) {
 
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
+sub try_rw   { my ($s, $d) = @_; $d //= $s; push @args, '--bind-try',    $s, $d; push @ll_rw, $d }
 sub bind_ro  { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind',     $s, $d; push @ll_ro, $d }
 sub try_ro   { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind-try', $s, $d; push @ll_ro, $d }
 sub mount_rw { push @args, $_[0], $_[1];                  push @ll_rw, $_[1] } # --tmpfs/--proc/--dev
@@ -500,7 +500,7 @@ try_ro("$home/.claude/.mcp.json");
 # Has to be rw, because of OAuth token refreshes
 bind_rw($creds);
 # ~/.claude/config.json is legacy, deliberately not mounted
-bind_rw($transcript_dir) if defined $transcript_dir;
+try_rw($transcript_dir);
 bind_rw($claude_json);
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
