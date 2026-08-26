@@ -416,16 +416,26 @@ if (opendir my $dh, $projects_dir) {
           . "  transcripts may not persist across runs")
         if defined $odd;
 }
-make_path("$projects_dir/$project_slug", { mode => 0700 });  ## no critic (ProhibitLeadingZeros)
--d "$projects_dir/$project_slug"
-    or fail("cannot create the session transcript dir: "
-          . printable("$projects_dir/$project_slug"));
+#  Keep going in case of a slug longer than NAME_MAX or an unwritable ~/.claude.
+my $transcript_dir = "$projects_dir/$project_slug";
+make_path($transcript_dir, { mode => 0700, error => \my $mkerr });  ## no critic (ProhibitLeadingZeros)
+if (@$mkerr || !-d $transcript_dir) {
+    my ($msg) = map { values %$_ } @$mkerr;
+    warning("cannot create the session transcript dir " . printable($transcript_dir)
+          . ($msg ? ":\n  " . printable($msg) : '')
+          . "\n  session transcripts will not persist across runs");
+    undef $transcript_dir;
+}
 # A relative XDG_CACHE_HOME is invalid per the spec; ignore it
 my $xdg_cache = $ENV{XDG_CACHE_HOME};
 my $cache_dir = (defined $xdg_cache && $xdg_cache =~ m{^/} ? $xdg_cache
                                                           : "$home/.cache") . '/aye-buddy';
-make_path($cache_dir, { mode => 0700 });  ## no critic (ProhibitLeadingZeros)
--d $cache_dir or fail("cannot create the sandbox cache dir: " . printable($cache_dir));
+make_path($cache_dir, { mode => 0700, error => \my $cache_err });  ## no critic (ProhibitLeadingZeros)
+if (@$cache_err || !-d $cache_dir) {
+    my ($msg) = map { values %$_ } @$cache_err;
+    fail("cannot create the sandbox cache dir " . printable($cache_dir)
+       . ($msg ? ": " . printable($msg) : ''));
+}
 my $claude_json = "$home/.claude.json";
 unless (-e $claude_json) {
     open(my $fh, '>', $claude_json) or fail("cannot create $claude_json: $!");
@@ -490,7 +500,7 @@ try_ro("$home/.claude/.mcp.json");
 # Has to be rw, because of OAuth token refreshes
 bind_rw($creds);
 # ~/.claude/config.json is legacy, deliberately not mounted
-bind_rw("$projects_dir/$project_slug");
+bind_rw($transcript_dir) if defined $transcript_dir;
 bind_rw($claude_json);
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");

@@ -143,6 +143,29 @@ subtest '~/.claude is not bound wholesale' => sub {
     }
 };
 
+# The slug is the project path with dashes, so a deep enough repo has one past
+# NAME_MAX and the transcript dir cannot exist. That costs persistence only —
+# the sandbox's projects/ is tmpfs — so the run must go ahead without the bind.
+subtest 'an uncreatable transcript dir is a warning, not a refusal' => sub {
+    my $r = run_aye({ repo_name => join('/', ('d' x 60) x 5) });
+    is $r->{exit}, 0, 'still launches';
+    like $r->{err}, qr/cannot create the session transcript dir/, 'says so';
+    like $r->{err}, qr/will not persist/, 'and what it costs';
+    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
+    ok !(grep { $_->[1] =~ m{/\.claude/projects/} } @rw), 'no transcript dir is bound';
+    ok !(grep { $_->[1] =~ m{/\.claude/projects\z} } @rw), 'and projects/ itself is not';
+};
+
+# The cache dir is what backs $HOME/.cache in the sandbox, so failing to create
+# it stays fatal — but with aye-buddy's message, not a raw File::Path croak.
+subtest 'an uncreatable cache dir fails cleanly' => sub {
+    my $r = run_aye({ cache_file => 1 });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/\Aaye-buddy: cannot create the sandbox cache dir/, 'our message';
+    unlike $r->{err}, qr/File\/Path\.pm|at .* line \d+/, 'no perl croak';
+    is $r->{argv}, [], 'bwrap never invoked';
+};
+
 # The slug rule belongs to claude, so pin the name a known directory has to
 # produce. Deriving the expectation with the implementation's own regex would
 # follow any future change to it, including a wrong one.
