@@ -314,6 +314,11 @@ secrets out of `--keep-env`.
 - **Git worktrees and submodule working dirs are refused.** Their `.git`
   points outside the project directory, which the sandbox doesn't bind, so
   git would break inside. Run from the main checkout instead.
+- **A repo overlapping `$HOME` or `~/.claude` is refused.** Both are tmpfs in
+  the sandbox and the project directory is bound over them, so a dotfiles repo
+  in `~`, a versioned `~/.claude`, or a repo `~/.claude` symlinks into would
+  mount the real thing back read-write and bypass the allowlist. Keep the repo
+  elsewhere below `$HOME`.
 - **Some in-session config writes fail.** Settings that `claude` persists
   to `~/.claude/settings.json` (e.g. `/effort`) error because that file is
   read-only in the sandbox. Set them on the host beforehand, or pass them

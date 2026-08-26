@@ -38,14 +38,22 @@ sub _stub {
 # so the run happens outside any repo, { no_ip => 1 } drops the ip stub so the
 # net-filter dependency check can be exercised, { ssh_sock => 1 } listens on a
 # unix socket and points SSH_AUTH_SOCK at it (aye-buddy requires a real -S path),
-# { repo_name => NAME } names the repo dir something other than `repo`.
+# { repo_name => NAME } names the repo dir something other than `repo`,
+# { claude_link => PATH } makes ~/.claude a symlink to $root/PATH.
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
 
     my $root = tempdir(CLEANUP => 1);
     my $repo = $opts->{repo_name} // 'repo';
-    make_path("$root/home/.claude", "$root/bin");
+    make_path("$root/bin");
+    # { claude_link => PATH } makes ~/.claude a symlink to $root/PATH instead of a
+    # real dir, the shape a dotfiles manager leaves behind.
+    if (my $link = $opts->{claude_link}) {
+        make_path("$root/home", "$root/$link");
+        symlink "$root/$link", "$root/home/.claude" or die "symlink: $!";
+    }
+    else { make_path("$root/home/.claude") }
     make_path("$root/$repo/.git") unless $opts->{no_repo};
     make_path("$root/$repo");
 
