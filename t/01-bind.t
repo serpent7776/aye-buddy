@@ -135,6 +135,12 @@ subtest '~/.claude is not bound wholesale' => sub {
     is scalar(@projects), 1, 'exactly one transcript dir is writable';
     like $projects[0][1], qr{\A\Q$env{HOME}/.claude/projects/\E-.*-repo\z},
         'and it is this project\'s';
+
+    # Transcripts hold source and pasted secrets; claude keeps projects/ 0700,
+    # so when aye-buddy is the one creating it, it must not be world-readable.
+    for my $d ("$env{HOME}/.claude/projects", $projects[0][1], "$env{HOME}/.cache/aye-buddy") {
+        is sprintf('%04o', (stat $d)[2] & 07777), '0700', "$d is 0700";
+    }
 };
 
 # The slug rule belongs to claude, so pin the name a known directory has to

@@ -416,7 +416,7 @@ if (opendir my $dh, $projects_dir) {
           . "  transcripts may not persist across runs")
         if defined $odd;
 }
-make_path("$projects_dir/$project_slug");
+make_path("$projects_dir/$project_slug", { mode => 0700 });  ## no critic (ProhibitLeadingZeros)
 -d "$projects_dir/$project_slug"
     or fail("cannot create the session transcript dir: "
           . printable("$projects_dir/$project_slug"));
@@ -424,7 +424,7 @@ make_path("$projects_dir/$project_slug");
 my $xdg_cache = $ENV{XDG_CACHE_HOME};
 my $cache_dir = (defined $xdg_cache && $xdg_cache =~ m{^/} ? $xdg_cache
                                                           : "$home/.cache") . '/aye-buddy';
-make_path($cache_dir);
+make_path($cache_dir, { mode => 0700 });  ## no critic (ProhibitLeadingZeros)
 -d $cache_dir or fail("cannot create the sandbox cache dir: " . printable($cache_dir));
 my $claude_json = "$home/.claude.json";
 unless (-e $claude_json) {
