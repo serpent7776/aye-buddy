@@ -31,6 +31,8 @@ sub printable {
     return $s;
 }
 
+sub under { my ($path, $root) = @_; $path eq $root || rindex($path, "$root/", 0) == 0 }
+
 sub on_path {
     my ($cmd) = @_;
     for my $d (split /:/, $ENV{PATH} // '') {
@@ -388,15 +390,13 @@ for my $h (Cwd::abs_path($home) // (), $home) {
     fail(printable($project_dir) . " is your home directory or an ancestor of it;\n" .
          "  binding it read-write would expose the whole host home to the session.\n" .
          "  Run aye-buddy from a repository below \$HOME instead.")
-        if $h eq $project_dir || rindex($h, "$project_dir/", 0) == 0;
+        if under($h, $project_dir);
     # Either direction: a repo under ~/.claude, and a repo ~/.claude symlinks into.
     for my $claude ("$h/.claude", Cwd::abs_path("$h/.claude") // ()) {
         fail(printable($project_dir) . " overlaps ~/.claude; binding it read-write\n" .
              "  would hand the session the host's claude state — other projects'\n" .
              "  transcripts, the OAuth token — that the sandbox exists to keep out.")
-            if $claude eq $project_dir
-            || rindex($project_dir, "$claude/", 0) == 0
-            || rindex($claude, "$project_dir/", 0) == 0;
+            if under($claude, $project_dir) || under($project_dir, $claude);
     }
 }
 # Bind only this project state dir
