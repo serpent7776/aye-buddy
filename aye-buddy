@@ -862,8 +862,10 @@ sub launch_filtered {
         waitpid($proxy_pid, 0);
     }
     unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
-    fail("aye-proxy kept dying ($restarts restarts); session terminated (log: $proxy_log)")
-        unless defined $status;
+    unless (defined $status) {
+        proxy_log_note($proxy_log, "giving up: aye-proxy kept dying ($restarts restarts)");
+        fail("aye-proxy kept dying ($restarts restarts); session terminated (log: $proxy_log)");
+    }
     if ($restarts) {
         warning("aye-proxy died and was restarted $restarts time(s) this session (log: $proxy_log)");
     } else {
