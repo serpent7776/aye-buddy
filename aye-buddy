@@ -829,6 +829,11 @@ sub launch_filtered {
             # Not a proxy death (it never ran), so not a restart: fault outright.
             my $err = $!;
             proxy_log_note($proxy_log, "fork aye-proxy: $err");
+            # reap sandbox if died
+            if (waitpid($sandbox_pid, POSIX::WNOHANG()) == $sandbox_pid) {
+                warning("fork aye-proxy: $err");
+                return $?;
+            }
             kill 'TERM', $sandbox_pid;
             waitpid($sandbox_pid, 0);
             unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
