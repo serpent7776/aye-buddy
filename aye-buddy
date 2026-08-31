@@ -729,7 +729,10 @@ sub spawn_proxy {
         POSIX::sigprocmask(POSIX::SIG_BLOCK, $held, $mask);
         $pid = fork;
         $err = $!;
-        if (defined $pid && $pid == 0) { $SIG{$_} = 'DEFAULT' for qw(INT TERM HUP) }
+        if (defined $pid && $pid == 0) {
+            $SIG{INT} = 'IGNORE';    # Ctrl-C doesn't kill proxy
+            $SIG{$_} = 'DEFAULT' for qw(TERM HUP);
+        }
         POSIX::sigprocmask(POSIX::SIG_SETMASK, $mask);
         last if defined $pid || $err != EAGAIN;
     }

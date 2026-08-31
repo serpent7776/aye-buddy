@@ -154,7 +154,7 @@ $SIG{CHLD} = sub {
 };
 
 # On shutdown, tear down live tunnels too.
-$SIG{TERM} = $SIG{INT} = sub { kill 'TERM', keys %kids; exit 0 };
+$SIG{TERM} = sub { kill 'TERM', keys %kids; exit 0 };
 
 # The launcher binds the listening socket and hands it over by fd; it keeps
 # the socket bound across proxy restarts, so the port is never free for
