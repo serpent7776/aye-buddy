@@ -701,14 +701,15 @@ sub launch_unfiltered {
 }
 
 # Run $try until it returns a defined value, restarting it after each bare
-# return, at most $max times. Returns ($value, $restarts); $value is undef when
-# the cap ran out. $try gets the restart count so far.
+# return, at most $max times. Returns ($value, $restarts, $why); $value is
+# undef when the cap ran out, $why is whatever $try returned after $value.
+# $try gets the restart count so far.
 sub with_restarts {
     my ($max, $try) = @_;
     my $restarts = 0;
     while (1) {
-        my $r = $try->($restarts);
-        return ($r, $restarts) if defined $r;
+        my ($r, $why) = $try->($restarts);
+        return ($r, $restarts, $why) if defined $r;
         return (undef, $restarts) if $restarts >= $max;
         $restarts++;
     }
@@ -822,7 +823,7 @@ sub launch_filtered {
     my $MAX_PROXY_RESTARTS = 5;
     $SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
     my $proxy_pid;
-    my ($status, $restarts) = with_restarts($MAX_PROXY_RESTARTS, sub {
+    my ($status, $restarts, $fork_failed) = with_restarts($MAX_PROXY_RESTARTS, sub {
         my ($n) = @_;
         sleep 1 if $n;    # wait before restart
         proxy_log_note($proxy_log, $n
@@ -835,8 +836,8 @@ sub launch_filtered {
             proxy_log_note($proxy_log, "fork aye-proxy: $err");
             # reap sandbox if died
             if (waitpid($sandbox_pid, POSIX::WNOHANG()) == $sandbox_pid) {
-                warning("fork aye-proxy: $err");
-                return $?;
+                warning("fork aye-proxy: $err (log: $proxy_log)");
+                return ($?, 'fork failed');
             }
             kill 'TERM', $sandbox_pid;
             waitpid($sandbox_pid, 0);
@@ -869,7 +870,7 @@ sub launch_filtered {
     }
     if ($restarts) {
         warning("aye-proxy died and was restarted $restarts time(s) this session (log: $proxy_log)");
-    } else {
+    } elsif (!$fork_failed) {
         unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log; rmdir $logdir }
     }
     exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
