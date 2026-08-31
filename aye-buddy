@@ -715,29 +715,30 @@ sub with_restarts {
     }
 }
 
-sub spawn_proxy {
-    my ($sock, $log) = @_;
-    # Hold terminating signals across the fork
+# fork with INT/TERM/HUP held until the child owns its handlers ($child_sigs,
+# DEFAULT otherwise), so it never runs the parent's forwarding handlers.
+# EAGAIN is retried briefly. As fork: pid, 0 in the child, undef with $! set.
+sub spawn {
+    my (%child_sigs) = @_;
     my $held = POSIX::SigSet->new(POSIX::SIGINT, POSIX::SIGTERM, POSIX::SIGHUP);
     my $mask = POSIX::SigSet->new;
-    # EAGAIN retry loop
     my ($pid, $err);
     for my $attempt (1 .. 5) {
-        if ($attempt > 1) {
-            proxy_log_note($log, "fork aye-proxy: $err; retrying");
-            sleep 1;
-        }
+        sleep 1 if $attempt > 1;
         POSIX::sigprocmask(POSIX::SIG_BLOCK, $held, $mask);
         $pid = fork;
         $err = $!;
-        if (defined $pid && $pid == 0) {
-            $SIG{INT} = 'IGNORE';    # Ctrl-C doesn't kill proxy
-            $SIG{$_} = 'DEFAULT' for qw(TERM HUP);
-        }
+        if (defined $pid && $pid == 0) { $SIG{$_} = $child_sigs{$_} // 'DEFAULT' for qw(INT TERM HUP) }
         POSIX::sigprocmask(POSIX::SIG_SETMASK, $mask);
         last if defined $pid || $err != EAGAIN;
     }
-    if (!defined $pid) { $! = $err; return }
+    $! = $err unless defined $pid;
+    return $pid;
+}
+
+sub spawn_proxy {
+    my ($sock, $log) = @_;
+    my $pid = spawn(INT => 'IGNORE') // return;    # Ctrl-C doesn't kill proxy
     if ($pid == 0) {
         open(STDOUT, '>>', $log);
         open(STDERR, '>>', $log);    # best-effort; keep denials off the TUI
@@ -806,7 +807,7 @@ sub launch_filtered {
                   $^X, $netns_seal, $proxy_port, $blob_arg,
                   ($lan_filter ? () : '--no-lan-filter'), '--',
                   'bwrap', @args);
-    my $sandbox_pid = fork // fail("fork sandbox: $!");
+    my $sandbox_pid = spawn() // fail("fork sandbox: $!");
     if ($sandbox_pid == 0) {
         exec { $launch[0] } @launch
             or POSIX::_exit(127);
