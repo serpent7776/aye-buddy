@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use Cwd ();
 use POSIX ();
-use Errno qw(EAGAIN EINTR);
+use Errno qw(EAGAIN);
 use Fcntl qw(F_SETFD O_WRONLY O_CREAT O_EXCL);
 use IO::Socket::INET;
 use Getopt::Long qw(GetOptions);
@@ -851,7 +851,7 @@ sub launch_filtered {
                 proxy_log_note($proxy_log, "aye-proxy exited (status $?)");
                 return;
             }
-            fail("waitpid: $!") if $pid < 0 && $! != EINTR;    # no children left; can't happen
+            fail("waitpid: $!") if $pid < 0;    # no children left; can't happen
         }
     });
     if (!defined $status) {
