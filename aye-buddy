@@ -5,7 +5,7 @@ use strict;
 use warnings;
 use Cwd ();
 use POSIX ();
-use Errno qw(EINTR);
+use Errno qw(EAGAIN EINTR);
 use Fcntl qw(F_SETFD O_WRONLY O_CREAT O_EXCL);
 use IO::Socket::INET;
 use Getopt::Long qw(GetOptions);
@@ -700,9 +700,40 @@ sub launch_unfiltered {
         or fail("exec bwrap: $!");
 }
 
+# Run $try until it returns a defined value, restarting it after each bare
+# return, at most $max times. Returns ($value, $restarts); $value is undef when
+# the cap ran out. $try gets the restart count so far.
+sub with_restarts {
+    my ($max, $try) = @_;
+    my $restarts = 0;
+    while (1) {
+        my $r = $try->($restarts);
+        return ($r, $restarts) if defined $r;
+        return (undef, $restarts) if $restarts >= $max;
+        $restarts++;
+    }
+}
+
 sub spawn_proxy {
     my ($sock, $log) = @_;
-    my $pid = fork // return;
+    # Hold terminating signals across the fork
+    my $held = POSIX::SigSet->new(POSIX::SIGINT, POSIX::SIGTERM, POSIX::SIGHUP);
+    my $mask = POSIX::SigSet->new;
+    # EAGAIN retry loop
+    my ($pid, $err);
+    for my $attempt (1 .. 5) {
+        if ($attempt > 1) {
+            proxy_log_note($log, "fork aye-proxy: $err; retrying");
+            sleep 1;
+        }
+        POSIX::sigprocmask(POSIX::SIG_BLOCK, $held, $mask);
+        $pid = fork;
+        $err = $!;
+        if (defined $pid && $pid == 0) { $SIG{$_} = 'DEFAULT' for qw(INT TERM HUP) }
+        POSIX::sigprocmask(POSIX::SIG_SETMASK, $mask);
+        last if defined $pid || $err != EAGAIN;
+    }
+    if (!defined $pid) { $! = $err; return }
     if ($pid == 0) {
         open(STDOUT, '>>', $log);
         open(STDERR, '>>', $log);    # best-effort; keep denials off the TUI
@@ -759,8 +790,6 @@ sub launch_filtered {
     ) or fail("listen for aye-proxy: $!");
     my $proxy_port = $proxy_sock->sockport;
 
-    my $proxy_pid = spawn_proxy($proxy_sock, $proxy_log) // fail("fork proxy: $!");
-
     # 2. Run the sandbox under pasta. '-' when seccomp is off tells the helper not
     #    to arm the blob.
     my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
@@ -789,46 +818,48 @@ sub launch_filtered {
     #    after the TUI is gone and the proxy log kept as the only evidence.
     my $MAX_PROXY_RESTARTS = 5;
     $SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
-    my $status;
-    my $proxy_died = 0;
-    my $restarts = 0;
-    while (1) {
-        my $pid = waitpid(-1, 0);
-        if ($pid == $sandbox_pid) { $status = $?; last }
-        if (defined $proxy_pid && $pid == $proxy_pid) {
-            my $replacement;
-            if ($restarts < $MAX_PROXY_RESTARTS) {
-                $restarts++;
-                proxy_log_note($proxy_log, "aye-proxy exited (status $?); restarting ($restarts/$MAX_PROXY_RESTARTS)");
-                $replacement = spawn_proxy($proxy_sock, $proxy_log);
-            }
-            if (defined $replacement) {
-                $proxy_pid = $replacement;
-            } else {
-                # Cap exhausted, or the respawn fork itself failed: fault.
-                $proxy_pid = undef;
-                $proxy_died = 1;
-                kill 'TERM', $sandbox_pid;
-            }
-            next;
+    my $proxy_pid;
+    my ($status, $restarts) = with_restarts($MAX_PROXY_RESTARTS, sub {
+        my ($n) = @_;
+        proxy_log_note($proxy_log, $n
+            ? "restarting aye-proxy ($n/$MAX_PROXY_RESTARTS)"
+            : "starting aye-proxy");
+        $proxy_pid = spawn_proxy($proxy_sock, $proxy_log);
+        if (!defined $proxy_pid) {
+            # Not a proxy death (it never ran), so not a restart: fault outright.
+            my $err = $!;
+            proxy_log_note($proxy_log, "fork aye-proxy: $err");
+            kill 'TERM', $sandbox_pid;
+            waitpid($sandbox_pid, 0);
+            unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
+            fail("fork aye-proxy: $err; session terminated (log: $proxy_log)");
         }
-        last if $pid < 0 && $! != EINTR;    # no children left; can't happen
+        while (1) {
+            my $pid = waitpid(-1, 0);
+            return $? if $pid == $sandbox_pid;
+            if ($pid == $proxy_pid) {
+                $proxy_pid = undef;
+                proxy_log_note($proxy_log, "aye-proxy exited (status $?)");
+                return;
+            }
+            fail("waitpid: $!") if $pid < 0 && $! != EINTR;    # no children left; can't happen
+        }
+    });
+    if (!defined $status) {
+        kill 'TERM', $sandbox_pid;
+        waitpid($sandbox_pid, 0);
     }
     if (defined $proxy_pid) {
         kill 'TERM', $proxy_pid;
         waitpid($proxy_pid, 0);
     }
-    # Drop the helper logs on a clean exit; keep them under debug for inspection —
-    # or whenever the proxy died, since the log is the only record of why.
-    if ($proxy_died) {
-        unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
-        fail("aye-proxy kept dying ($restarts restarts); session terminated (log: $proxy_log)");
-    }
+    unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
+    fail("aye-proxy kept dying ($restarts restarts); session terminated (log: $proxy_log)")
+        unless defined $status;
     if ($restarts) {
         warning("aye-proxy died and was restarted $restarts time(s) this session (log: $proxy_log)");
-        unlink $pasta_log unless $ENV{AYE_BUDDY_DEBUG};
     } else {
-        unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log, $pasta_log; rmdir $logdir }
+        unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log; rmdir $logdir }
     }
     exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
 }
