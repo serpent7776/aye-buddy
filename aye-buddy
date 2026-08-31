@@ -824,6 +824,7 @@ sub launch_filtered {
     my $proxy_pid;
     my ($status, $restarts) = with_restarts($MAX_PROXY_RESTARTS, sub {
         my ($n) = @_;
+        sleep 1 if $n;    # wait before restart
         proxy_log_note($proxy_log, $n
             ? "restarting aye-proxy ($n/$MAX_PROXY_RESTARTS)"
             : "starting aye-proxy");
