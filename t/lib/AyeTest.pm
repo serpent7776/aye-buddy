@@ -40,7 +40,8 @@ sub _stub {
 # unix socket and points SSH_AUTH_SOCK at it (aye-buddy requires a real -S path),
 # { repo_name => NAME } names the repo dir something other than `repo`,
 # { claude_link => PATH } makes ~/.claude a symlink to $root/PATH instead of a
-# real dir, the shape a dotfiles manager leaves behind, { cache_file => 1 }
+# real dir, the shape a dotfiles manager leaves behind, { repo_claude_link =>
+# PATH } does the same for the repo's own .claude, { cache_file => 1 }
 # plants a plain file where ~/.cache/aye-buddy would go.
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
@@ -55,6 +56,10 @@ sub run_aye {
         symlink "$root/$link", "$root/home/.claude" or die "symlink: $!";
     }
     else { make_path("$root/home/.claude") }
+    if (my $link = $opts->{repo_claude_link}) {
+        make_path("$root/$link");
+        symlink "$root/$link", "$root/$repo/.claude" or die "symlink: $!";
+    }
     if ($opts->{cache_file}) {
         make_path("$root/home/.cache");
         open my $fh, '>', "$root/home/.cache/aye-buddy" or die "open: $!";

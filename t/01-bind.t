@@ -139,7 +139,7 @@ subtest '~/.claude is not bound wholesale' => sub {
     # Transcripts hold source and pasted secrets; claude keeps projects/ 0700,
     # so when aye-buddy is the one creating it, it must not be world-readable.
     for my $d ("$env{HOME}/.claude/projects", $projects[0][1], "$env{HOME}/.cache/aye-buddy") {
-        is sprintf('%04o', (stat $d)[2] & 07777), '0700', "$d is 0700";
+        is sprintf('%04o', (stat $d)[2] & oct('7777')), '0700', "$d is 0700";
     }
 };
 
@@ -231,6 +231,36 @@ subtest 'config.json stays out of the session' => sub {
                  map  { bwrap_binds($r->{argv}, $_) }
                  qw(--bind --bind-try --ro-bind --ro-bind-try);
     is scalar(@mounts), 0, 'not mounted under any flag';
+};
+
+# The project dir is rw wholesale, but its .claude/ loads into the next
+# host-side claude run in this repo — same reasoning as the .git/hooks overlay.
+# Created when missing, or the guard would skip exactly the repos with nothing
+# there yet and a session could plant one.
+subtest 'the project .claude comes back read-only' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my ($guard) = grep { $_->[1] =~ m{/repo/\.claude\z} }
+                  bwrap_binds($r->{argv}, '--ro-bind');
+    ok $guard, 'an --ro-bind covers it';
+    is $guard->[0], $guard->[1], 'at the same path inside';
+    ok -d "$r->{root}/repo/.claude", 'created on the host when absent';
+
+    # bwrap's last mount on a target wins, so the guard must follow the rw
+    # project bind or it protects nothing.
+    my @a = @{$r->{argv}};
+    my ($proj) = grep { $a[$_] eq '--bind' && $a[$_ + 2] =~ m{/repo\z} } 0 .. $#a - 2;
+    my ($ro)   = grep { $a[$_] eq '--ro-bind' && $a[$_ + 2] =~ m{/repo/\.claude\z} } 0 .. $#a - 2;
+    ok $ro > $proj, 'mounted after the rw project bind';
+};
+
+# A read-only bind follows symlinks, so a .claude pointing elsewhere would mount
+# its target into the session instead of guarding the repo's own dir.
+subtest 'a symlinked project .claude is refused' => sub {
+    my $r = run_aye({ repo_claude_link => 'elsewhere' });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/\.claude is a symlink/, 'explains why';
+    is $r->{argv}, [], 'bwrap never invoked';
 };
 
 done_testing;

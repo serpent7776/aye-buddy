@@ -106,7 +106,11 @@ dir under `~/.claude/projects/`, `~/.claude/.credentials.json`,
 
 **Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git and
 SSH *config* (`~/.gitconfig`, `~/.ssh/config`, `~/.ssh/known_hosts`); the
-project's `.git/hooks`, `.git/config`, `.git/modules`; and the parts of
+project's `.git/hooks`, `.git/config`, `.git/modules` and its whole
+`.claude/` — a later host-side `claude` run in this repo acts on that dir
+the same way it acts on `~/.claude/`, so a session can't plant hooks,
+skills or settings there (it's created empty when the repo has none, so
+the guard holds there too); and the parts of
 `~/.claude/` that a later host-side `claude` run would act on —
 `settings.json`, `settings.local.json`, `CLAUDE.md`, `commands/`,
 `agents/`, `skills/`, `output-styles/`, `plugins/`, `hooks/`, `scripts/`,
@@ -324,7 +328,11 @@ secrets out of `--keep-env`.
   read-only in the sandbox. Set them on the host beforehand, or pass them
   per invocation. `/statusline` fails for the same reason, and its script
   would land in the tmpfs anyway — configure it on the host, under
-  `~/.claude/scripts/`.
+  `~/.claude/scripts/`. The project's `.claude/` is read-only too, so
+  writes there — `.claude/settings.local.json`, worktrees under
+  `.claude/worktrees/` — fail in-session; edit project-scoped config on
+  the host. A project `.claude` that is a symlink is refused, since a
+  read-only bind would expose its target instead of guarding it.
 - **Some `~/.claude` state doesn't persist.** Only this project's transcript
   dir is bound back, so prompt history (`history.jsonl`), file history and
   anything a newer `claude` keeps elsewhere under `~/.claude/` lives in the

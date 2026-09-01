@@ -482,6 +482,13 @@ bind_ro($_) for @extra_ro;
 try_ro("$project_dir/.git/hooks");
 try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
+my $proj_claude = "$project_dir/.claude";
+fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
+   . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
+unless (-e $proj_claude) {
+    mkdir $proj_claude or fail("cannot create " . printable($proj_claude) . ": $!");
+}
+bind_ro($proj_claude);
 # ~/.claude is deliberately not bound: it stays an empty dir in the tmpfs $HOME
 try_ro("$home/.claude/settings.json");
 try_ro("$home/.claude/settings.local.json");
