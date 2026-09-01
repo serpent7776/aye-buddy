@@ -221,6 +221,7 @@ my $agent_spec = $AGENTS{$agent}
           . " (supported: " . join(', ', sort keys %AGENTS) . ")");
 on_path($agent_spec->{bin})
     or fail("required command not found on PATH: $agent_spec->{bin}");
+
 # pass_through leaves a leading `--` in place; consume it as our separator so a
 # literal `--allow-bwrap` etc. can still reach claude untouched.
 my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
