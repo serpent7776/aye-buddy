@@ -34,7 +34,8 @@ The network layer is egress *control*, not *prevention* — see
 ## Requirements
 
 - `perl` (core modules only — nothing from CPAN)
-- `bwrap` (bubblewrap)
+- `bwrap` (bubblewrap) 0.10 or newer — the `~/.claude` overlays need its
+  overlay options, and a kernel that allows unprivileged overlayfs (5.11+)
 - `claude` (Claude Code CLI)
 - a `git` or `jj` repository (the wrapper refuses to run outside one)
 
@@ -110,13 +111,19 @@ project's `.git/hooks`, `.git/config`, `.git/modules` and its whole
 `.claude/` — a later host-side `claude` run in this repo acts on that dir
 the same way it acts on `~/.claude/`, so a session can't plant hooks,
 skills or settings there (it's created empty when the repo has none, so
-the guard holds there too); and the parts of
-`~/.claude/` that a later host-side `claude` run would act on —
-`settings.json`, `settings.local.json`, `CLAUDE.md`, `commands/`,
-`agents/`, `skills/`, `output-styles/`, `plugins/`, `hooks/`, `scripts/`,
-`mcp.json`, `.mcp.json`, `statusline-command.sh`. Slash commands, agents,
-skills, hooks and statusline scripts living there work inside the sandbox,
-and a session can't rewrite them for the next run outside it.
+the guard holds there too); and the flat `~/.claude/` config files a later
+host-side `claude` run would act on — `settings.json`,
+`settings.local.json`, `CLAUDE.md`, `mcp.json`, `.mcp.json`,
+`statusline-command.sh`.
+
+**Visible, writes discarded:** the `~/.claude/` content dirs a later
+host-side `claude` run would load — `commands/`, `agents/`, `skills/`,
+`output-styles/`, `plugins/`, `hooks/`, `scripts/`. Each is an overlay:
+the host's files show through, and writes land in a tmpfs upper layer
+that is thrown away at exit. Slash commands, agents, skills, hooks and
+statusline scripts living there work inside the sandbox, and a session
+can add or edit them for its own use — but nothing of that reaches the
+host or survives into the next run.
 
 The rest of `~/.claude/` is **not mounted at all**: the session gets an
 empty directory with only the paths above bound into it. Other projects'
@@ -338,7 +345,10 @@ secrets out of `--keep-env`.
   anything a newer `claude` keeps elsewhere under `~/.claude/` lives in the
   sandbox tmpfs and is gone at exit. `--continue` and `--resume` still work
   for this project. If `claude` changes how it names those transcript dirs,
-  aye-buddy warns at startup rather than losing them silently.
+  aye-buddy warns at startup rather than losing them silently. Writes into
+  the overlaid content dirs go the same way: an in-session plugin install
+  or generated skill works until exit, then vanishes — install those on
+  the host to keep them.
 - **The credentials file is readable *and* writable in-session.** `claude`
   needs the OAuth token and has to be able to rewrite it on refresh, so the
   file is bound read-write; a payload runs under the same uid, so it can read

@@ -13,7 +13,7 @@ use Cwd qw(abs_path);
 use POSIX qw(dup2);
 use Exporter 'import';
 
-our @EXPORT = qw(run_aye bwrap_binds);
+our @EXPORT = qw(run_aye bwrap_binds setenv_value setenv_list);
 
 # Resolve the script under test relative to this file, not CWD (we chdir away).
 my $AYE = abs_path(__FILE__ . '/../../../aye-buddy')
@@ -42,7 +42,11 @@ sub _stub {
 # { claude_link => PATH } makes ~/.claude a symlink to $root/PATH instead of a
 # real dir, the shape a dotfiles manager leaves behind, { repo_claude_link =>
 # PATH } does the same for the repo's own .claude, { cache_file => 1 }
-# plants a plain file where ~/.cache/aye-buddy would go.
+# plants a plain file where ~/.cache/aye-buddy would go, { claude_dirs =>
+# [NAMES] } creates those dirs under ~/.claude, { claude_files => [NAMES] }
+# plants plain files there instead, { bwrap_version => STRING }
+# sets what the stub bwrap answers to --version (default: new enough),
+# { bwrap_version_status => N } the exit status of that answer.
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
@@ -60,6 +64,11 @@ sub run_aye {
         make_path("$root/$link");
         symlink "$root/$link", "$root/$repo/.claude" or die "symlink: $!";
     }
+    make_path("$root/home/.claude/$_") for @{ $opts->{claude_dirs} // [] };
+    for my $f (@{ $opts->{claude_files} // [] }) {
+        open my $fh, '>', "$root/home/.claude/$f" or die "open: $!";
+        close $fh;
+    }
     if ($opts->{cache_file}) {
         make_path("$root/home/.cache");
         open my $fh, '>', "$root/home/.cache/aye-buddy" or die "open: $!";
@@ -69,7 +78,13 @@ sub run_aye {
     # Stub bwrap/pasta dump their argv; stub claude is only reached if real.
     # With egress filtering on (the default) aye-buddy execs pasta, whose argv
     # nests the whole bwrap command; with --no-net-filter it execs bwrap.
-    _stub("$root/bin/bwrap", 'print "$_\n" for @ARGV; exit 0;');
+    # aye-buddy probes `bwrap --version` over a pipe before building the argv,
+    # so the stub answers that first; the answer never lands in the out capture.
+    my $bv  = quotemeta($opts->{bwrap_version} // 'bubblewrap 0.11.2');
+    my $bvs = $opts->{bwrap_version_status} // 0;
+    _stub("$root/bin/bwrap",
+          "if (\@ARGV == 1 && \$ARGV[0] eq '--version') { print \"$bv\\n\"; exit $bvs }\n"
+        . 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/pasta", 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/claude", 'exit 0;');
     # Only aye-buddy's presence check looks for ip; the stub pasta never runs
@@ -135,6 +150,33 @@ sub bwrap_binds {
         push @out, [ $argv->[$i + 1], $argv->[$i + 2] ];
     }
     return @out;
+}
+
+# The last --setenv VALUE for $name in a captured argv, or undef if none.
+sub setenv_value {
+    my ($argv, $name) = @_;
+    my $val;
+    for my $i (0 .. $#$argv - 2) {
+        next unless $argv->[$i] eq '--setenv' && $argv->[$i + 1] eq $name;
+        $val = $argv->[$i + 2];
+    }
+    return $val;
+}
+
+# A newline-joined --setenv value (the LL_* lists) as a list. The stub prints
+# one argv entry per line, so such a value fans out into the lines after the
+# name; collect until the next flag.
+sub setenv_list {
+    my ($argv, $name) = @_;
+    my ($i) = grep { $argv->[$_] eq '--setenv' && $argv->[$_ + 1] eq $name }
+              0 .. $#$argv - 1;
+    return () unless defined $i;
+    my @vals;
+    for my $j ($i + 2 .. $#$argv) {
+        last if $argv->[$j] =~ /\A--/;
+        push @vals, $argv->[$j];
+    }
+    return @vals;
 }
 
 1;

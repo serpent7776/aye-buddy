@@ -42,6 +42,35 @@ sub on_path {
     return 0;
 }
 
+sub version_at_least {
+    my ($m, $n, $maj, $min) = @_;
+    return $m > $maj || ($m == $maj && $n >= $min);
+}
+
+sub require_kernel_version {
+    my ($maj, $min, $why) = @_;
+    my $release = (POSIX::uname())[2];
+    my ($m, $n) = $release =~ /\A(\d+)\.(\d+)/
+        or fail("cannot parse kernel release: " . printable($release));
+    version_at_least($m, $n, $maj, $min)
+        or fail("kernel $m.$n is too old: aye-buddy needs kernel >= $maj.$min for $why");
+}
+
+sub require_cmd_version {
+    my ($cmd, $banner, $maj, $min, $why) = @_;
+    open my $fh, '-|', $cmd, '--version' or fail("run $cmd --version: $!");
+    my $out = do { local $/; <$fh> } // '';
+    close $fh;
+    if ($?) {
+        my $how = ($? & 127) ? 'killed by signal ' . ($? & 127) : 'exited ' . ($? >> 8);
+        fail("$cmd --version failed ($how)");
+    }
+    my ($m, $n) = $out =~ /\b\Q$banner\E\s+(\d+)\.(\d+)/
+        or fail("cannot parse $cmd --version output: " . printable($out =~ s/\s+\z//r));
+    version_at_least($m, $n, $maj, $min)
+        or fail("$cmd $m.$n is too old: aye-buddy needs $cmd >= $maj.$min for $why");
+}
+
 # Supported agents. Each entry names the binary to run plus the fixed args and
 # env aye-buddy injects for it; --agent picks one (default claude).
 my %AGENTS = (
@@ -167,7 +196,13 @@ for my $spec (keys %opt_spec) {
     $our_flag{"--$name"} = 1;
     $our_flag{"--no-$name"} = 1 if $spec =~ /!/;
 }
+
+require_kernel_version(5, 11, 'unprivileged overlayfs');
+
 on_path('bwrap') or fail("required command not found on PATH: bwrap");
+
+require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the ~/.claude overlays');
+
 my $agent_spec = $AGENTS{$agent}
     or fail("unknown agent: " . printable($agent)
           . " (supported: " . join(', ', sort keys %AGENTS) . ")");
@@ -455,6 +490,17 @@ sub bind_ro  { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind',     $s, $d;
 sub try_ro   { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind-try', $s, $d; push @ll_ro, $d }
 sub mount_rw { push @args, $_[0], $_[1];                  push @ll_rw, $_[1] } # --tmpfs/--proc/--dev
 sub link_to  { push @args, '--symlink',     $_[0], $_[1] }
+sub try_tmp_overlay {
+    my ($s, $d) = @_; $d //= $s;
+    return unless -e $s;
+    # Overlayfs mounts directories only
+    unless (-d _) {
+        warning(printable($s) . " is not a directory; not mounted into the session");
+        return;
+    }
+    push @args, '--overlay-src', $s, '--tmp-overlay', $d;
+    push @ll_rw, $d;
+}
 
 push @args, '--clearenv';   # must come before any --setenv (bwrap is order-sensitive)
 
@@ -493,13 +539,13 @@ bind_ro($proj_claude);
 try_ro("$home/.claude/settings.json");
 try_ro("$home/.claude/settings.local.json");
 try_ro("$home/.claude/CLAUDE.md");
-try_ro("$home/.claude/commands");
-try_ro("$home/.claude/agents");
-try_ro("$home/.claude/skills");
-try_ro("$home/.claude/output-styles");
-try_ro("$home/.claude/plugins");
-try_ro("$home/.claude/hooks");
-try_ro("$home/.claude/scripts");
+try_tmp_overlay("$home/.claude/commands");
+try_tmp_overlay("$home/.claude/agents");
+try_tmp_overlay("$home/.claude/skills");
+try_tmp_overlay("$home/.claude/output-styles");
+try_tmp_overlay("$home/.claude/plugins");
+try_tmp_overlay("$home/.claude/hooks");
+try_tmp_overlay("$home/.claude/scripts");
 # /statusline writes its script here by default, and settings.json points at it
 try_ro("$home/.claude/statusline-command.sh");
 try_ro("$home/.claude/mcp.json");

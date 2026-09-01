@@ -184,21 +184,81 @@ subtest 'the transcript dir name follows claude\'s slug rule' => sub {
         'one dash per non-alphanumeric, runs kept, case preserved';
 };
 
-subtest 'the exec-bearing ~/.claude paths come back read-only' => sub {
-    my $r = run_aye();
+# Each of these is loaded by a later host-side claude — as a command it runs,
+# or as text it puts in the model's context. The flat files come back read-only;
+# the content dirs are overlays whose upper layer is a tmpfs bwrap discards, so
+# a write appears to work in-session but never reaches the host.
+my @claude_dirs = qw(commands agents skills output-styles plugins hooks scripts);
+subtest 'writes to the exec-bearing ~/.claude paths cannot reach the host' => sub {
+    my $r = run_aye({ claude_dirs => [@claude_dirs] });
     is $r->{exit}, 0;
+    my @a = @{$r->{argv}};
+    my $home = setenv_value($r->{argv}, 'HOME');
     my %ro = map { $_->[1] => 1 } bwrap_binds($r->{argv}, '--ro-bind-try');
-    my ($home) = map { $r->{argv}[$_ + 2] }
-                 grep { $r->{argv}[$_] eq '--setenv' && $r->{argv}[$_ + 1] eq 'HOME' }
-                 0 .. $#{$r->{argv}} - 2;
-    # Each of these is loaded by a later host-side claude — as a command it runs,
-    # or as text it puts in the model's context.
     ok $ro{"$home/.claude/$_"}, "$_ is ro" for qw(
         settings.json settings.local.json CLAUDE.md
-        commands agents skills output-styles plugins hooks scripts
         mcp.json .mcp.json statusline-command.sh
     );
+    for my $d (@claude_dirs) {
+        my ($i) = grep { $a[$_] eq '--overlay-src' && $a[$_ + 1] eq "$home/.claude/$d" }
+                  0 .. $#a - 1;
+        ok(defined $i, "$d is an overlay lower layer") or next;
+        is [@a[$i + 2 .. $i + 3]], ['--tmp-overlay', "$home/.claude/$d"],
+            "$d gets a throwaway upper at the same path";
+        ok !$ro{"$home/.claude/$d"}, "$d is not also ro-bound";
+    }
+};
 
+# --overlay-src aborts bwrap on a missing source, so absent dirs are skipped
+# host-side instead — the -try contract, minus the atomicity: the check runs at
+# launch, not mount time, and nothing deletes these dirs in between.
+subtest 'absent ~/.claude dirs produce no overlay' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    is scalar(grep { $_ eq '--tmp-overlay' } @{$r->{argv}}), 0, 'none requested';
+};
+
+# Landlock rules only ever grant — the $HOME-wide rw entry already covers the
+# dest, so an ro entry couldn't deny anything — but the lists document intent,
+# and a future reshuffle of the broad grants would inherit a stale ro entry.
+subtest 'overlay dests go in the rw Landlock list' => sub {
+    my $r = run_aye({ claude_dirs => ['skills'] });
+    is $r->{exit}, 0;
+    my $dest = setenv_value($r->{argv}, 'HOME') . '/.claude/skills';
+    my @ro = setenv_list($r->{argv}, 'LL_RO');
+    ok(scalar(@ro), 'LL_RO is present') or return;
+    ok +(grep { $_ eq $dest } setenv_list($r->{argv}, 'LL_RW')), 'in LL_RW';
+    ok !(grep { $_ eq $dest } @ro), 'not in LL_RO';
+};
+
+# The overlay options exist since bwrap 0.10; an older one would abort on the
+# constructed argv with its own error, so it is refused up front by version.
+subtest 'a pre-overlay bwrap is refused' => sub {
+    my $r = run_aye({ bwrap_version => 'bubblewrap 0.9.0' });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/bwrap 0\.9 is too old.*0\.10/, 'names the floor';
+    is $r->{argv}, [], 'the sandbox is never launched';
+};
+
+# The version decides a security-relevant gate, so it comes from the number
+# after the bubblewrap banner, not whatever dotted number appears first.
+subtest 'the version is read from the bubblewrap token' => sub {
+    my $r = run_aye({ bwrap_version => 'bwrap 2023.1 (bubblewrap 0.9.0)' });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/bwrap 0\.9 is too old/, 'the banner number decides, not 2023.1';
+};
+
+subtest 'a banner without the bubblewrap token is refused' => sub {
+    my $r = run_aye({ bwrap_version => 'something 1.2' });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/cannot parse bwrap --version output/, 'named as a parse failure';
+};
+
+# Digits on the stdout of a failing probe are not a version.
+subtest 'a failing bwrap --version is not mined for digits' => sub {
+    my $r = run_aye({ bwrap_version => 'error near 1.2', bwrap_version_status => 3 });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/bwrap --version failed \(exited 3\)/, 'reports the exit instead';
 };
 
 # A bind needs its source to exist, and an OAuth login in-session writes through
@@ -224,9 +284,7 @@ subtest 'the credentials file is created and bound rw' => sub {
 subtest 'config.json stays out of the session' => sub {
     my $r = run_aye();
     is $r->{exit}, 0;
-    my ($home) = map { $r->{argv}[$_ + 2] }
-                 grep { $r->{argv}[$_] eq '--setenv' && $r->{argv}[$_ + 1] eq 'HOME' }
-                 0 .. $#{$r->{argv}} - 2;
+    my $home = setenv_value($r->{argv}, 'HOME');
     my @mounts = grep { $_->[1] eq "$home/.claude/config.json" }
                  map  { bwrap_binds($r->{argv}, $_) }
                  qw(--bind --bind-try --ro-bind --ro-bind-try);
@@ -261,6 +319,15 @@ subtest 'a symlinked project .claude is refused' => sub {
     is $r->{exit}, 1, 'exits 1';
     like $r->{err}, qr/\.claude is a symlink/, 'explains why';
     is $r->{argv}, [], 'bwrap never invoked';
+};
+
+# Overlayfs mounts directories only, so a plain file at an overlaid name can't
+# come back; it used to bind ro, so the skip is called out rather than silent.
+subtest 'a non-directory at an overlaid ~/.claude path warns' => sub {
+    my $r = run_aye({ claude_files => ['hooks'] });
+    is $r->{exit}, 0, 'still launches';
+    like $r->{err}, qr/hooks is not a directory/, 'says so';
+    is scalar(grep { $_ eq '--tmp-overlay' } @{$r->{argv}}), 0, 'and no overlay for it';
 };
 
 done_testing;

@@ -8,17 +8,6 @@ use AyeTest;
 # in the argv aye-buddy hands bwrap. run_aye's child inherits our env except
 # PATH/HOME/SSH_AUTH_SOCK, so setting a var here reaches aye-buddy.
 
-# The last --setenv for $name, or undef if there is none.
-sub setenv_value {
-    my ($argv, $name) = @_;
-    my $val;
-    for my $i (0 .. $#$argv - 2) {
-        next unless $argv->[$i] eq '--setenv' && $argv->[$i + 1] eq $name;
-        $val = $argv->[$i + 2];
-    }
-    return $val;
-}
-
 subtest 'a host var is cleared without the flag' => sub {
     local $ENV{AYE_TEST_VAR} = 'secret';
     my $r = run_aye();
