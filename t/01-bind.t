@@ -256,6 +256,24 @@ subtest 'a banner without the bubblewrap token is refused' => sub {
     like $r->{err}, qr/cannot parse bwrap --version output/, 'named as a parse failure';
 };
 
+# The kernel side of the overlay requirement is a real probe, not a release
+# parse, so vendor backports below 5.11 pass on their own merits; a host that
+# fails only the overlay run is refused with the capability named, and one
+# where the control run fails too is not blamed on overlayfs.
+subtest 'a kernel without unprivileged overlayfs is refused' => sub {
+    my $r = run_aye({ overlay_probe_status => 1 });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/unprivileged overlayfs/, 'names the capability';
+    is $r->{argv}, [], 'the sandbox is never launched';
+};
+
+subtest 'a host where bwrap cannot sandbox at all gets its own message' => sub {
+    my $r = run_aye({ overlay_probe_status => 1, sandbox_probe_status => 1 });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/cannot create a sandbox/, 'not blamed on overlayfs';
+    is $r->{argv}, [], 'the sandbox is never launched';
+};
+
 # Digits on the stdout of a failing probe are not a version.
 subtest 'a failing bwrap --version is not mined for digits' => sub {
     my $r = run_aye({ bwrap_version => 'error near 1.2', bwrap_version_status => 3 });

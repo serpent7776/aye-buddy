@@ -47,13 +47,27 @@ sub version_at_least {
     return $m > $maj || ($m == $maj && $n >= $min);
 }
 
-sub require_kernel_version {
-    my ($maj, $min, $why) = @_;
-    my $release = (POSIX::uname())[2];
-    my ($m, $n) = $release =~ /\A(\d+)\.(\d+)/
-        or fail("cannot parse kernel release: " . printable($release));
-    version_at_least($m, $n, $maj, $min)
-        or fail("kernel $m.$n is too old: aye-buddy needs kernel >= $maj.$min for $why");
+# Whether this kernel lets bwrap mount an overlay
+sub require_overlay_support {
+    my $dir = File::Temp::tempdir(CLEANUP => 1);
+    my $probe = sub {
+        my $pid = fork // fail("fork: $!");
+        if ($pid == 0) {
+            open(STDIN,  '<', '/dev/null');
+            open(STDOUT, '>', '/dev/null');
+            open(STDERR, '>', '/dev/null');
+            exec { 'bwrap' } 'bwrap', '--ro-bind', '/', '/', @_, 'true'
+                or POSIX::_exit(127);
+        }
+        waitpid($pid, 0);
+        return $? == 0;
+    };
+    return if $probe->('--overlay-src', $dir, '--tmp-overlay', $dir);
+    fail($probe->()
+        ? "the kernel does not allow unprivileged overlayfs (5.11, or a vendor"
+          . " backport), which the ~/.claude overlays need"
+        : "bwrap cannot create a sandbox here at all; unprivileged user"
+          . " namespaces may be disabled on this host");
 }
 
 sub require_cmd_version {
@@ -197,11 +211,10 @@ for my $spec (keys %opt_spec) {
     $our_flag{"--no-$name"} = 1 if $spec =~ /!/;
 }
 
-require_kernel_version(5, 11, 'unprivileged overlayfs');
-
 on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
 require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the ~/.claude overlays');
+require_overlay_support();
 
 my $agent_spec = $AGENTS{$agent}
     or fail("unknown agent: " . printable($agent)

@@ -35,7 +35,8 @@ The network layer is egress *control*, not *prevention* — see
 
 - `perl` (core modules only — nothing from CPAN)
 - `bwrap` (bubblewrap) 0.10 or newer — the `~/.claude` overlays need its
-  overlay options, and a kernel that allows unprivileged overlayfs (5.11+)
+  overlay options, and a kernel that allows unprivileged overlayfs (5.11,
+  or a vendor backport — probed at startup)
 - `claude` (Claude Code CLI)
 - a `git` or `jj` repository (the wrapper refuses to run outside one)
 
