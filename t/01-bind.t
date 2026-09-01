@@ -17,12 +17,14 @@ subtest 'bare --bind-ro with no PATH is rejected' => sub {
     like $r->{err}, qr/--bind-ro requires a PATH argument/;
 };
 
+# /etc, not /tmp: the harness home lives under TMPDIR, and a bind of an
+# ancestor of ~/.claude is refused.
 subtest '--bind=PATH form is accepted' => sub {
-    my $r = run_aye('--bind=/tmp');
+    my $r = run_aye('--bind=/etc');
     is $r->{exit}, 0, 'exits 0';
     my @b = bwrap_binds($r->{argv}, '--bind');
-    ok +(grep { $_->[0] eq '/tmp' && $_->[1] eq '/tmp' } @b),
-        'exposes /tmp rw at the same path';
+    ok +(grep { $_->[0] eq '/etc' && $_->[1] eq '/etc' } @b),
+        'exposes /etc rw at the same path';
 };
 
 # Two rejection branches: a missing leaf under a real dir still resolves (abs_path
@@ -78,18 +80,18 @@ subtest 'relative --bind path is resolved to absolute' => sub {
 };
 
 subtest '--bind-ro uses bwrap --ro-bind' => sub {
-    my $r = run_aye('--bind-ro', '/tmp');
+    my $r = run_aye('--bind-ro', '/etc');
     is $r->{exit}, 0;
     my @b = bwrap_binds($r->{argv}, '--ro-bind');
-    ok +(grep { $_->[0] eq '/tmp' && $_->[1] eq '/tmp' } @b),
-        'exposes /tmp ro at the same path';
+    ok +(grep { $_->[0] eq '/etc' && $_->[1] eq '/etc' } @b),
+        'exposes /etc ro at the same path';
 };
 
 subtest 'repeated --bind flags all reach bwrap' => sub {
-    my $r = run_aye('--bind', '/tmp', '--bind', '/usr');
+    my $r = run_aye('--bind', '/etc', '--bind', '/usr');
     is $r->{exit}, 0;
     my @b = bwrap_binds($r->{argv}, '--bind');
-    ok +(grep { $_->[0] eq '/tmp' } @b), '/tmp bound';
+    ok +(grep { $_->[0] eq '/etc' } @b), '/etc bound';
     ok +(grep { $_->[0] eq '/usr' } @b), '/usr bound';
 };
 
@@ -328,6 +330,23 @@ subtest 'a non-directory at an overlaid ~/.claude path warns' => sub {
     is $r->{exit}, 0, 'still launches';
     like $r->{err}, qr/hooks is not a directory/, 'says so';
     is scalar(grep { $_ eq '--tmp-overlay' } @{$r->{argv}}), 0, 'and no overlay for it';
+};
+
+# The ~/.claude guards mount after the extra binds, so a bind under ~/.claude
+# would be silently covered — writes vanishing with the throwaway upper at
+# exit — and a bind of an ancestor would put the real ~/.claude back wholesale.
+subtest 'an extra bind under ~/.claude is refused' => sub {
+    my $r = run_aye({ claude_dirs => ['skills'] }, '--bind', '../home/.claude/skills');
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr{overlaps ~/\.claude}, 'explains why';
+    is $r->{argv}, [], 'bwrap never invoked';
+};
+
+subtest 'an extra bind of an ancestor of ~/.claude is refused' => sub {
+    my $r = run_aye('--bind-ro', '../home');
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr{overlaps ~/\.claude}, 'the real ~/.claude would come back';
+    is $r->{argv}, [], 'bwrap never invoked';
 };
 
 done_testing;

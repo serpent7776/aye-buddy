@@ -434,6 +434,19 @@ for my $h (Cwd::abs_path($home) // (), $home) {
             if under($claude, $project_dir) || under($project_dir, $claude);
     }
 }
+
+# Disallow bind mounts under ~/.claude - we use overlayfs there.
+for my $bind (@extra_rw, @extra_ro) {
+    for my $h (Cwd::abs_path($home) // (), $home) {
+        for my $f ("$h/.claude", Cwd::abs_path("$h/.claude") // ()) {
+            fail(printable($bind) . " overlaps ~/.claude, which the sandbox builds\n" .
+                 "  its own view of; a bind there would either be covered by that view\n" .
+                 "  or hand the session the host's claude state.")
+                if under($bind, $f) || under($f, $bind);
+        }
+    }
+}
+
 # Bind only this project state dir
 my $projects_dir = "$home/.claude/projects";
 my $project_slug = do {
