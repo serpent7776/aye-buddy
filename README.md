@@ -34,7 +34,7 @@ The network layer is egress *control*, not *prevention* — see
 ## Requirements
 
 - `perl` (core modules only — nothing from CPAN)
-- `bwrap` (bubblewrap) 0.10 or newer — the `~/.claude` overlays need its
+- `bwrap` (bubblewrap) 0.10 or newer — the `.claude` overlays need its
   overlay options, and a kernel that allows unprivileged overlayfs (5.11,
   or a vendor backport — probed at startup)
 - `claude` (Claude Code CLI)
@@ -108,23 +108,27 @@ dir under `~/.claude/projects/`, `~/.claude/.credentials.json`,
 
 **Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git and
 SSH *config* (`~/.gitconfig`, `~/.ssh/config`, `~/.ssh/known_hosts`); the
-project's `.git/hooks`, `.git/config`, `.git/modules` and its whole
-`.claude/` — a later host-side `claude` run in this repo acts on that dir
-the same way it acts on `~/.claude/`, so a session can't plant hooks,
-skills or settings there (it's created empty when the repo has none, so
-the guard holds there too); and the flat `~/.claude/` config files a later
+project's `.git/hooks`, `.git/config`, `.git/modules` and its `.claude/`
+— a later host-side `claude` run in this repo acts on that dir the same
+way it acts on `~/.claude/`, so a session can't plant hooks, skills or
+settings there (it's created empty when the repo has none, so the guard
+holds there too); and the flat `~/.claude/` config files a later
 host-side `claude` run would act on — `settings.json`,
 `settings.local.json`, `CLAUDE.md`, `mcp.json`, `.mcp.json`,
 `statusline-command.sh`.
 
 **Visible, writes discarded:** the `~/.claude/` content dirs a later
 host-side `claude` run would load — `commands/`, `agents/`, `skills/`,
-`output-styles/`, `plugins/`, `hooks/`, `scripts/`. Each is an overlay:
-the host's files show through, and writes land in a tmpfs upper layer
-that is thrown away at exit. Slash commands, agents, skills, hooks and
-statusline scripts living there work inside the sandbox, and a session
-can add or edit them for its own use — but nothing of that reaches the
-host or survives into the next run.
+`output-styles/`, `plugins/`, `hooks/`, `scripts/` — and the worktree
+dirs, `.claude/worktrees/` plus the `.git/worktrees/` admin dir, so
+in-session `git worktree` use works without leaving the host repo a
+half-created worktree. Each is an overlay: the host's files show
+through, and writes land in a tmpfs upper layer that is thrown away at
+exit. Slash commands, agents, skills, hooks and statusline scripts
+living there work inside the sandbox, and a session can add or edit them
+for its own use — but nothing of that reaches the host or survives into
+the next run, except a worktree's commits and branch, which live in the
+shared `.git`.
 
 The rest of `~/.claude/` is **not mounted at all**: the session gets an
 empty directory with only the paths above bound into it. Other projects'
@@ -337,19 +341,22 @@ secrets out of `--keep-env`.
   per invocation. `/statusline` fails for the same reason, and its script
   would land in the tmpfs anyway — configure it on the host, under
   `~/.claude/scripts/`. The project's `.claude/` is read-only too, so
-  writes there — `.claude/settings.local.json`, worktrees under
-  `.claude/worktrees/` — fail in-session; edit project-scoped config on
-  the host. A project `.claude` that is a symlink is refused, since a
-  read-only bind would expose its target instead of guarding it.
+  writes there — `.claude/settings.local.json` — fail in-session; edit
+  project-scoped config on the host. A project `.claude` that is a
+  symlink, or not a directory, is refused, since a read-only bind would
+  expose a symlink's target instead of guarding it.
 - **Some `~/.claude` state doesn't persist.** Only this project's transcript
   dir is bound back, so prompt history (`history.jsonl`), file history and
   anything a newer `claude` keeps elsewhere under `~/.claude/` lives in the
   sandbox tmpfs and is gone at exit. `--continue` and `--resume` still work
   for this project. If `claude` changes how it names those transcript dirs,
   aye-buddy warns at startup rather than losing them silently. Writes into
-  the overlaid content dirs go the same way: an in-session plugin install
-  or generated skill works until exit, then vanishes — install those on
-  the host to keep them.
+  the overlaid dirs go the same way: an in-session plugin install or
+  generated skill works until exit, then vanishes — install those on the
+  host to keep them. An in-session `git worktree add` goes the same way:
+  the checkout under `.claude/worktrees/` and its `.git/worktrees/`
+  registration vanish at exit, while the branch and its commits persist
+  in `.git`.
 - **The credentials file is readable *and* writable in-session.** `claude`
   needs the OAuth token and has to be able to rewrite it on refresh, so the
   file is bound read-write; a payload runs under the same uid, so it can read

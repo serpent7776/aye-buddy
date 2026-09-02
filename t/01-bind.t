@@ -217,7 +217,8 @@ subtest 'writes to the exec-bearing ~/.claude paths cannot reach the host' => su
 subtest 'absent ~/.claude dirs produce no overlay' => sub {
     my $r = run_aye();
     is $r->{exit}, 0;
-    is scalar(grep { $_ eq '--tmp-overlay' } @{$r->{argv}}), 0, 'none requested';
+    my $home = setenv_value($r->{argv}, 'HOME');
+    is scalar(grep { m{\A\Q$home\E/\.claude/} } overlay_dests($r->{argv})), 0, 'none requested';
 };
 
 # Landlock rules only ever grant — the $HOME-wide rw entry already covers the
@@ -312,24 +313,53 @@ subtest 'config.json stays out of the session' => sub {
 };
 
 # The project dir is rw wholesale, but its .claude/ loads into the next
-# host-side claude run in this repo — same reasoning as the .git/hooks overlay.
+# host-side claude run in this repo — same reasoning as the .git/hooks guard.
 # Created when missing, or the guard would skip exactly the repos with nothing
 # there yet and a session could plant one.
 subtest 'the project .claude comes back read-only' => sub {
     my $r = run_aye();
     is $r->{exit}, 0;
+    my @a = @{$r->{argv}};
     my ($guard) = grep { $_->[1] =~ m{/repo/\.claude\z} }
                   bwrap_binds($r->{argv}, '--ro-bind');
     ok $guard, 'an --ro-bind covers it';
     is $guard->[0], $guard->[1], 'at the same path inside';
+    ok !(grep { m{/repo/\.claude\z} } overlay_dests($r->{argv})), 'not overlaid';
     ok -d "$r->{root}/repo/.claude", 'created on the host when absent';
 
     # bwrap's last mount on a target wins, so the guard must follow the rw
     # project bind or it protects nothing.
-    my @a = @{$r->{argv}};
     my ($proj) = grep { $a[$_] eq '--bind' && $a[$_ + 2] =~ m{/repo\z} } 0 .. $#a - 2;
     my ($ro)   = grep { $a[$_] eq '--ro-bind' && $a[$_ + 2] =~ m{/repo/\.claude\z} } 0 .. $#a - 2;
+    ok(defined $proj && defined $ro, 'both mounts found') or return;
     ok $ro > $proj, 'mounted after the rw project bind';
+};
+
+# git worktree add writes the checkout under .claude/worktrees and its admin dir
+# under .git/worktrees; both get throwaway uppers so in-session worktrees work
+# whole and are discarded whole — a persistent half would leave the host repo
+# with a registered-but-missing worktree.
+subtest 'the worktree dirs come back as throwaway overlays' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my @a = @{$r->{argv}};
+    my ($ro) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 2] =~ m{/repo/\.claude\z} } 0 .. $#a - 2;
+    for my $wt (qw(.claude/worktrees .git/worktrees)) {
+        my ($i) = grep { $a[$_] eq '--overlay-src' && $a[$_ + 1] =~ m{/repo/\Q$wt\E\z} } 0 .. $#a - 1;
+        ok(defined $i, "$wt is an overlay lower layer") or next;
+        is [@a[$i + 2 .. $i + 3]], ['--tmp-overlay', $a[$i + 1]], "$wt gets a throwaway upper at the same path";
+        ok -d "$r->{root}/repo/$wt", "$wt created on the host when absent";
+        ok $i > $ro, "$wt mounted after the ro .claude guard";
+    }
+};
+
+# The .claude guard needs a real directory, and skipping it would leave the
+# rw project dir free to grow a real .claude/ underneath.
+subtest 'a plain file at the project .claude is refused' => sub {
+    my $r = run_aye({ repo_claude_file => 1 });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/\.claude is not a directory/, 'explains why';
+    is $r->{argv}, [], 'bwrap never invoked';
 };
 
 # A read-only bind follows symlinks, so a .claude pointing elsewhere would mount
@@ -347,7 +377,8 @@ subtest 'a non-directory at an overlaid ~/.claude path warns' => sub {
     my $r = run_aye({ claude_files => ['hooks'] });
     is $r->{exit}, 0, 'still launches';
     like $r->{err}, qr/hooks is not a directory/, 'says so';
-    is scalar(grep { $_ eq '--tmp-overlay' } @{$r->{argv}}), 0, 'and no overlay for it';
+    my $home = setenv_value($r->{argv}, 'HOME');
+    ok !(grep { $_ eq "$home/.claude/hooks" } overlay_dests($r->{argv})), 'and no overlay for it';
 };
 
 # The ~/.claude guards mount after the extra binds, so a bind under ~/.claude

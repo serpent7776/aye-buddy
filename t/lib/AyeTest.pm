@@ -13,7 +13,7 @@ use Cwd qw(abs_path);
 use POSIX qw(dup2);
 use Exporter 'import';
 
-our @EXPORT = qw(run_aye bwrap_binds setenv_value setenv_list);
+our @EXPORT = qw(run_aye bwrap_binds overlay_dests setenv_value setenv_list);
 
 # Resolve the script under test relative to this file, not CWD (we chdir away).
 my $AYE = abs_path(__FILE__ . '/../../../aye-buddy')
@@ -41,7 +41,8 @@ sub _stub {
 # { repo_name => NAME } names the repo dir something other than `repo`,
 # { claude_link => PATH } makes ~/.claude a symlink to $root/PATH instead of a
 # real dir, the shape a dotfiles manager leaves behind, { repo_claude_link =>
-# PATH } does the same for the repo's own .claude, { cache_file => 1 }
+# PATH } does the same for the repo's own .claude and { repo_claude_file => 1 }
+# plants a plain file there, { cache_file => 1 }
 # plants a plain file where ~/.cache/aye-buddy would go, { claude_dirs =>
 # [NAMES] } creates those dirs under ~/.claude, { claude_files => [NAMES] }
 # plants plain files there instead, { bwrap_version => STRING }
@@ -65,6 +66,10 @@ sub run_aye {
     if (my $link = $opts->{repo_claude_link}) {
         make_path("$root/$link");
         symlink "$root/$link", "$root/$repo/.claude" or die "symlink: $!";
+    }
+    if ($opts->{repo_claude_file}) {
+        open my $fh, '>', "$root/$repo/.claude" or die "open: $!";
+        close $fh;
     }
     make_path("$root/home/.claude/$_") for @{ $opts->{claude_dirs} // [] };
     for my $f (@{ $opts->{claude_files} // [] }) {
@@ -155,6 +160,12 @@ sub bwrap_binds {
         push @out, [ $argv->[$i + 1], $argv->[$i + 2] ];
     }
     return @out;
+}
+
+# The destinations of every --tmp-overlay in a captured argv.
+sub overlay_dests {
+    my ($argv) = @_;
+    return map { $argv->[$_ + 1] } grep { $argv->[$_] eq '--tmp-overlay' } 0 .. $#$argv - 1;
 }
 
 # The last --setenv VALUE for $name in a captured argv, or undef if none.

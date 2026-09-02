@@ -65,7 +65,7 @@ sub require_overlay_support {
     return if $probe->('--overlay-src', $dir, '--tmp-overlay', $dir);
     fail($probe->()
         ? "the kernel does not allow unprivileged overlayfs (5.11, or a vendor"
-          . " backport), which the ~/.claude overlays need"
+          . " backport), which the .claude overlays need"
         : "bwrap cannot create a sandbox here at all; unprivileged user"
           . " namespaces may be disabled on this host");
 }
@@ -213,7 +213,7 @@ for my $spec (keys %opt_spec) {
 
 on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
-require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the ~/.claude overlays');
+require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the .claude overlays');
 require_overlay_support();
 
 my $agent_spec = $AGENTS{$agent}
@@ -517,16 +517,16 @@ sub bind_ro  { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind',     $s, $d;
 sub try_ro   { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind-try', $s, $d; push @ll_ro, $d }
 sub mount_rw { push @args, $_[0], $_[1];                  push @ll_rw, $_[1] } # --tmpfs/--proc/--dev
 sub link_to  { push @args, '--symlink',     $_[0], $_[1] }
+sub tmp_overlay { my ($s, $d) = @_; $d //= $s; push @args, '--overlay-src', $s, '--tmp-overlay', $d; push @ll_rw, $d }
 sub try_tmp_overlay {
-    my ($s, $d) = @_; $d //= $s;
+    my ($s) = @_;
     return unless -e $s;
     # Overlayfs mounts directories only
     unless (-d _) {
         warning(printable($s) . " is not a directory; not mounted into the session");
         return;
     }
-    push @args, '--overlay-src', $s, '--tmp-overlay', $d;
-    push @ll_rw, $d;
+    tmp_overlay($s);
 }
 
 push @args, '--clearenv';   # must come before any --setenv (bwrap is order-sensitive)
@@ -561,7 +561,16 @@ fail(printable($proj_claude) . " is a symlink; binding it read-only would expose
 unless (-e $proj_claude) {
     mkdir $proj_claude or fail("cannot create " . printable($proj_claude) . ": $!");
 }
+fail(printable($proj_claude) . " is not a directory\n"
+   . "  Make it a real directory to sandbox this project.") unless -d $proj_claude;
 bind_ro($proj_claude);
+for my $wt ("$proj_claude/worktrees", "$project_dir/.git/worktrees") {
+    fail(printable($wt) . " is a symlink; overlaying it would expose its target") if -l $wt;
+    unless (-e $wt) {
+        mkdir $wt or fail("cannot create " . printable($wt) . ": $!");
+    }
+    try_tmp_overlay($wt);
+}
 # ~/.claude is deliberately not bound: it stays an empty dir in the tmpfs $HOME
 try_ro("$home/.claude/settings.json");
 try_ro("$home/.claude/settings.local.json");
