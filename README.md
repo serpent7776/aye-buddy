@@ -388,7 +388,9 @@ make test
 
 Black-box tests for option parsing and the egress helpers (`t/`). The full
 network mechanism needs real namespaces and is verified out-of-band by
-`t/manual/egress-check.sh`.
+`t/manual/egress-check.sh`; the `.claude` overlays likewise by
+`t/manual/overlay-check.sh`, run in two phases around a real session (see its
+header).
 
 ## Development
 
