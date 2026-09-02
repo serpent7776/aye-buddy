@@ -398,4 +398,17 @@ subtest 'an extra bind of an ancestor of ~/.claude is refused' => sub {
     is $r->{argv}, [], 'bwrap never invoked';
 };
 
+# The project .claude guards mount after the extra binds too, so a bind under
+# them would be silently shadowed. Only that direction: under an ancestor bind
+# the guards still mount last and win, so binding the project dir stays allowed.
+subtest 'an extra bind under the project .claude is refused' => sub {
+    my $r = run_aye({ repo_claude_dirs => ['worktrees'] }, '--bind', '.claude/worktrees');
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr{under the project's \.claude}, 'explains why';
+    is $r->{argv}, [], 'bwrap never invoked';
+
+    $r = run_aye('--bind-ro', '.');
+    is $r->{exit}, 0, 'but an ancestor bind is not refused';
+};
+
 done_testing;

@@ -42,7 +42,8 @@ sub _stub {
 # { claude_link => PATH } makes ~/.claude a symlink to $root/PATH instead of a
 # real dir, the shape a dotfiles manager leaves behind, { repo_claude_link =>
 # PATH } does the same for the repo's own .claude and { repo_claude_file => 1 }
-# plants a plain file there, { cache_file => 1 }
+# plants a plain file there, { repo_claude_dirs => [NAMES] } creates those
+# dirs under the repo's .claude, { cache_file => 1 }
 # plants a plain file where ~/.cache/aye-buddy would go, { claude_dirs =>
 # [NAMES] } creates those dirs under ~/.claude, { claude_files => [NAMES] }
 # plants plain files there instead, { bwrap_version => STRING }
@@ -71,6 +72,7 @@ sub run_aye {
         open my $fh, '>', "$root/$repo/.claude" or die "open: $!";
         close $fh;
     }
+    make_path("$root/$repo/.claude/$_") for @{ $opts->{repo_claude_dirs} // [] };
     make_path("$root/home/.claude/$_") for @{ $opts->{claude_dirs} // [] };
     for my $f (@{ $opts->{claude_files} // [] }) {
         open my $fh, '>', "$root/home/.claude/$f" or die "open: $!";

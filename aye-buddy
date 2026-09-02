@@ -449,7 +449,9 @@ for my $h (Cwd::abs_path($home) // (), $home) {
     }
 }
 
-# Disallow bind mounts under ~/.claude - we use overlayfs there.
+# Disallow bind mounts under ~/.claude and the project .claude - we use
+# overlayfs there.
+my $proj_claude = "$project_dir/.claude";
 for my $bind (@extra_rw, @extra_ro) {
     for my $h (Cwd::abs_path($home) // (), $home) {
         for my $f ("$h/.claude", Cwd::abs_path("$h/.claude") // ()) {
@@ -458,6 +460,12 @@ for my $bind (@extra_rw, @extra_ro) {
                  "  or hand the session the host's claude state.")
                 if under($bind, $f) || under($f, $bind);
         }
+    }
+    for my $f ($proj_claude, Cwd::abs_path($proj_claude) // ()) {
+        fail(printable($bind) . " is under the project's .claude, which the sandbox\n" .
+             "  covers with its own read-only and throwaway mounts; the bind would\n" .
+             "  be shadowed by them.")
+            if under($bind, $f);
     }
 }
 
@@ -555,7 +563,6 @@ bind_ro($_) for @extra_ro;
 try_ro("$project_dir/.git/hooks");
 try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
-my $proj_claude = "$project_dir/.claude";
 fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
    . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
 unless (-e $proj_claude) {

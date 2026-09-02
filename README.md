@@ -80,7 +80,7 @@ than being silently forwarded.
 | Flag | Effect |
 | --- | --- |
 | `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today. |
-| `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. Paths overlapping `~/.claude` (either direction) are refused — the sandbox builds its own view of that dir. |
+| `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. Paths overlapping `~/.claude` (either direction) or under the project's `.claude` are refused — the sandbox builds its own view of those. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--keep-env NAME` | Pass one environment variable through into the session instead of clearing it. Repeatable — see below. |
