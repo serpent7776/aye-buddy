@@ -47,9 +47,9 @@ sub version_at_least {
     return $m > $maj || ($m == $maj && $n >= $min);
 }
 
-# Whether this kernel lets bwrap mount an overlay
+# Whether bwrap can mount an overlay on dirs we need
 sub require_overlay_support {
-    my $dir = File::Temp::tempdir(CLEANUP => 1);
+    my @dirs = @_;
     my $probe = sub {
         my $pid = fork // fail("fork: $!");
         if ($pid == 0) {
@@ -62,7 +62,11 @@ sub require_overlay_support {
         waitpid($pid, 0);
         return $? == 0;
     };
-    return if $probe->('--overlay-src', $dir, '--tmp-overlay', $dir);
+    return if $probe->(map { ('--overlay-src', $_, '--tmp-overlay', $_) } @dirs);
+    my $tmp = File::Temp::tempdir(CLEANUP => 1);
+    fail("the kernel refuses a filesystem under " . join(' or ', map { printable($_) } @dirs)
+       . "\n  as an overlayfs lower layer, which the .claude overlays need")
+        if $probe->('--overlay-src', $tmp, '--tmp-overlay', $tmp);
     fail($probe->()
         ? "the kernel does not allow unprivileged overlayfs (5.11, or a vendor"
           . " backport), which the .claude overlays need"
@@ -214,7 +218,6 @@ for my $spec (keys %opt_spec) {
 on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
 require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the .claude overlays');
-require_overlay_support();
 
 my $agent_spec = $AGENTS{$agent}
     or fail("unknown agent: " . printable($agent)
@@ -432,6 +435,8 @@ if (-f "$project_dir/.git") {
 }
 
 my $home = $ENV{HOME} // fail("HOME is not set");
+my $claude_home = Cwd::abs_path("$home/.claude");
+require_overlay_support($project_dir, defined $claude_home && -d $claude_home ? $claude_home : $home);
 # The project dir is bound rw, so it must not overlap $HOME or ~/.claude, which
 # are tmpfs. Compare the raw $HOME as well: the mounts use it verbatim, so a
 # symlinked home can overlap the project dir under one name and not the other.

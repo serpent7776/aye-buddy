@@ -49,8 +49,9 @@ sub _stub {
 # plants plain files there instead, { bwrap_version => STRING }
 # sets what the stub bwrap answers to --version (default: new enough),
 # { bwrap_version_status => N } the exit status of that answer,
-# { overlay_probe_status => N } / { sandbox_probe_status => N } the exit
-# status of the startup overlay/control probes (bwrap argv ending in `true`).
+# { overlay_probe_status => N } / { lower_probe_status => N } /
+# { sandbox_probe_status => N } the exit status of the startup
+# kernel-overlay/lower-layer/control probes (bwrap argv ending in `true`).
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
@@ -92,10 +93,11 @@ sub run_aye {
     my $bv  = quotemeta($opts->{bwrap_version} // 'bubblewrap 0.11.2');
     my $bvs = $opts->{bwrap_version_status} // 0;
     my $ops = $opts->{overlay_probe_status} // 0;
+    my $lps = $opts->{lower_probe_status} // 0;
     my $sps = $opts->{sandbox_probe_status} // 0;
     _stub("$root/bin/bwrap",
           "if (\@ARGV == 1 && \$ARGV[0] eq '--version') { print \"$bv\\n\"; exit $bvs }\n"
-        . "if (\@ARGV && \$ARGV[-1] eq 'true') { exit((grep { \$_ eq '--tmp-overlay' } \@ARGV) ? $ops : $sps) }\n"
+        . "if (\@ARGV && \$ARGV[-1] eq 'true') { my \$n = grep { \$_ eq '--tmp-overlay' } \@ARGV; exit(\$n > 1 ? ($lps || $ops) : \$n ? $ops : $sps) }\n"
         . 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/pasta", 'print "$_\n" for @ARGV; exit 0;');
     _stub("$root/bin/claude", 'exit 0;');

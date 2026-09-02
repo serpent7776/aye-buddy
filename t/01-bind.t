@@ -268,6 +268,17 @@ subtest 'a kernel without unprivileged overlayfs is refused' => sub {
     is $r->{argv}, [], 'the sandbox is never launched';
 };
 
+# Lower-layer support depends on the filesystem, so the probe runs against the
+# repo and ~/.claude; a host where only those fail is told which dirs are the
+# problem instead of being blamed on the kernel.
+subtest 'a filesystem refused as an overlay lower gets its own message' => sub {
+    my $r = run_aye({ lower_probe_status => 1 });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/overlayfs lower layer/, 'names the requirement';
+    like $r->{err}, qr{/repo}, 'and the dirs probed';
+    is $r->{argv}, [], 'the sandbox is never launched';
+};
+
 subtest 'a host where bwrap cannot sandbox at all gets its own message' => sub {
     my $r = run_aye({ overlay_probe_status => 1, sandbox_probe_status => 1 });
     is $r->{exit}, 1, 'exits 1';
