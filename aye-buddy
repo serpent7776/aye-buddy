@@ -4,6 +4,7 @@
 use strict;
 use warnings;
 use Cwd ();
+use Encode ();
 use POSIX ();
 use Errno qw(EAGAIN);
 use Fcntl qw(F_SETFD O_WRONLY O_CREAT O_EXCL);
@@ -484,14 +485,23 @@ for my $bind (@extra_rw, @extra_ro) {
     }
 }
 
+# claude names the dir after the cwd: every UTF-16 code unit outside [A-Za-z0-9]
+# becomes a dash, and a name past 200 units is cut there and suffixed with a
+# base-36 hash of the path. Kept in step with claude by hand.
+sub claude_slug {
+    my ($path) = @_;
+    my @units = unpack 'n*', Encode::encode('UTF-16BE', Encode::decode('UTF-8', $path));
+    my $slug = join '', map { chr($_) =~ /[A-Za-z0-9]/ ? chr($_) : '-' } @units;
+    return $slug if @units <= 200;
+    require Math::BigInt;
+    my $h = 0;
+    $h = unpack 'l', pack 'l', $h * 31 + $_ for @units;   # JS int32 arithmetic
+    return substr($slug, 0, 200) . '-' . lc Math::BigInt->new(abs $h)->to_base(36);
+}
+
 # Bind only this project state dir
 my $projects_dir = "$claude_dir/projects";
-my $project_slug = do {
-    my $p = $project_dir;
-    utf8::decode($p);
-    $p =~ s/[^A-Za-z0-9]/-/g;
-    $p;
-};
+my $project_slug = claude_slug($project_dir);
 if (opendir my $dh, $projects_dir) {
     # Dirs only: a stray file in there says nothing about claude's naming.
     my ($odd) = grep { !/^\./ && /[^A-Za-z0-9-]/ && -d "$projects_dir/$_" } readdir $dh;

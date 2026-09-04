@@ -145,11 +145,11 @@ subtest '~/.claude is not bound wholesale' => sub {
     }
 };
 
-# The slug is the project path with dashes, so a deep enough repo has one past
-# NAME_MAX and the transcript dir cannot exist. That costs persistence only —
-# the sandbox's projects/ is tmpfs — so the run must go ahead without the bind.
+# A plain file where projects/ should be leaves the transcript dir uncreatable.
+# That costs persistence only — the sandbox's projects/ is tmpfs — so the run
+# must go ahead without the bind.
 subtest 'an uncreatable transcript dir is a warning, not a refusal' => sub {
-    my $r = run_aye({ repo_name => join('/', ('d' x 60) x 5) });
+    my $r = run_aye({ claude_files => ['projects'] });
     is $r->{exit}, 0, 'still launches';
     like $r->{err}, qr/cannot create the session transcript dir/, 'says so';
     like $r->{err}, qr/will not persist/, 'and what it costs';
@@ -184,6 +184,47 @@ subtest 'the transcript dir name follows claude\'s slug rule' => sub {
     like $slug, qr/\A-/, 'the leading separator becomes a dash';
     like $slug, qr/\Q-My-Proj--v2-x\E\z/,
         'one dash per non-alphanumeric, runs kept, case preserved';
+};
+
+# claude's rule runs over UTF-16 code units, so a character outside the BMP is
+# two dashes, and a name past 200 units is cut there and suffixed with a base-36
+# hash of the path. The transcript dir for a long path used to be unbindable
+# (past NAME_MAX) and is now a name claude never writes to unless this matches.
+# claude's own rule under node is the reference where node is on PATH; deriving
+# the hash in perl here would only mirror the implementation.
+my $JS_SLUG = q~const t=process.argv[1];let e=t.replace(/[^a-zA-Z0-9]/g,"-");~
+            . q~if(e.length>200){let h=0;for(let i=0;i<t.length;i++)h=(h<<5)-h+t.charCodeAt(i)|0;~
+            . q~e=e.slice(0,200)+"-"+Math.abs(h).toString(36)}process.stdout.write(e)~;
+sub node_slug {
+    my ($path) = @_;
+    return unless grep { -x "$_/node" } split /:/, $ENV{PATH};
+    open my $fh, '-|', 'node', '-e', $JS_SLUG, $path or return;
+    local $/;
+    return scalar <$fh>;
+}
+sub transcript_slug {
+    my ($r) = @_;
+    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
+    my ($projects) = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
+    return $projects ? ($projects->[1] =~ m{/\.claude/projects/(.+)\z})[0] : undef;
+}
+subtest 'a character outside the BMP is two dashes, as in UTF-16' => sub {
+    my $r = run_aye({ repo_name => "caf\xC3\xA9-\xF0\x9F\x98\x80" });   # café-😀
+    is $r->{exit}, 0;
+    my $slug = transcript_slug($r);
+    like $slug, qr/-caf----\z/, 'é is one dash, the emoji two';
+    my $ref = node_slug("$r->{root}/caf\xC3\xA9-\xF0\x9F\x98\x80");
+    is $slug, $ref, 'matches claude\'s rule under node' if defined $ref;
+};
+subtest 'a name past 200 units is cut and hashed' => sub {
+    my $name = join('/', ('d' x 60) x 5);
+    my $r = run_aye({ repo_name => $name });
+    is $r->{exit}, 0;
+    unlike $r->{err}, qr/cannot create the session transcript dir/, 'the dir is creatable';
+    my $slug = transcript_slug($r);
+    like $slug, qr/\A.{200}-[0-9a-z]+\z/, '200 units, a dash, a base-36 hash';
+    my $ref = node_slug("$r->{root}/$name");
+    is $slug, $ref, 'matches claude\'s rule under node' if defined $ref;
 };
 
 # Each of these is loaded by a later host-side claude — as a command it runs,
