@@ -323,6 +323,55 @@ subtest 'config.json stays out of the session' => sub {
     is scalar(@mounts), 0, 'not mounted under any flag';
 };
 
+# claude keeps its state under CLAUDE_CONFIG_DIR when that is set. Pinning
+# ~/.claude regardless would start the session with no settings and bind a
+# transcript dir claude never reads, with nothing to say so.
+subtest 'CLAUDE_CONFIG_DIR moves the claude state root' => sub {
+    my $r = run_aye({ config_dir => 'cfg' });
+    is $r->{exit}, 0;
+    my $cfg  = "$r->{root}/cfg";
+    my $home = setenv_value($r->{argv}, 'HOME');
+    is setenv_value($r->{argv}, 'CLAUDE_CONFIG_DIR'), $cfg, 'forwarded to the session';
+    my %ro = map { $_->[1] => 1 } bwrap_binds($r->{argv}, '--ro-bind-try');
+    ok $ro{"$cfg/settings.json"}, 'settings pinned from there';
+    my @rw = map { bwrap_binds($r->{argv}, $_) } qw(--bind --bind-try);
+    ok +(grep { $_->[1] eq "$cfg/.credentials.json" } @rw), 'credentials bound from there';
+    ok +(grep { $_->[1] eq "$cfg/.claude.json" } @rw), '.claude.json bound from there';
+    ok +(grep { $_->[1] =~ m{\A\Q$cfg\E/projects/.+} } @rw), 'transcript dir under it';
+    ok -e "$cfg/.credentials.json", 'credentials file created there';
+    ok !(grep { m{\A\Q$home\E/\.claude} } keys %ro, map { $_->[1] } @rw),
+        'nothing bound under ~/.claude';
+    my @a = @{$r->{argv}};
+    ok +(grep { $a[$_] eq '--tmpfs' && $a[$_ + 1] eq $cfg } 0 .. $#a - 1),
+        'backed by a tmpfs of its own, outside the $HOME one';
+};
+
+subtest 'a CLAUDE_CONFIG_DIR under $HOME needs no tmpfs of its own' => sub {
+    my $r = run_aye({ config_dir => 'home/cfg' });
+    is $r->{exit}, 0;
+    my @a = @{$r->{argv}};
+    my @tmpfs = map { $a[$_ + 1] } grep { $a[$_] eq '--tmpfs' } 0 .. $#a - 1;
+    ok !(grep { $_ eq "$r->{root}/home/cfg" } @tmpfs), 'covered by the $HOME tmpfs';
+};
+
+# The cache bind at ~/.cache comes last, so a state dir under it would be
+# covered: no host settings, and credentials and transcripts written into the
+# shared cache instead of the real state dir, with nothing to say so.
+subtest 'a CLAUDE_CONFIG_DIR under ~/.cache is refused' => sub {
+    my $r = run_aye({ config_dir => 'home/.cache/claude' });
+    is $r->{exit}, 1;
+    like $r->{err}, qr/is under ~\/\.cache/;
+    is $r->{argv}, [], 'bwrap never invoked';
+};
+
+# A relative one is resolved against the cwd by claude and would be a path
+# under the project dir here; refusing it is simpler than following that.
+subtest 'a relative CLAUDE_CONFIG_DIR is refused' => sub {
+    my $r = run_aye({ env => { CLAUDE_CONFIG_DIR => 'cfg' } });
+    is $r->{exit}, 1;
+    like $r->{err}, qr/CLAUDE_CONFIG_DIR must be an absolute path/;
+};
+
 # The project dir is rw wholesale, but its .claude/ loads into the next
 # host-side claude run in this repo — same reasoning as the .git/hooks guard.
 # Created when missing, or the guard would skip exactly the repos with nothing
@@ -398,14 +447,14 @@ subtest 'a non-directory at an overlaid ~/.claude path warns' => sub {
 subtest 'an extra bind under ~/.claude is refused' => sub {
     my $r = run_aye({ claude_dirs => ['skills'] }, '--bind', '../home/.claude/skills');
     is $r->{exit}, 1, 'exits 1';
-    like $r->{err}, qr{overlaps ~/\.claude}, 'explains why';
+    like $r->{err}, qr{overlaps .*/\.claude}, 'explains why';
     is $r->{argv}, [], 'bwrap never invoked';
 };
 
 subtest 'an extra bind of an ancestor of ~/.claude is refused' => sub {
     my $r = run_aye('--bind-ro', '../home');
     is $r->{exit}, 1, 'exits 1';
-    like $r->{err}, qr{overlaps ~/\.claude}, 'the real ~/.claude would come back';
+    like $r->{err}, qr{overlaps .*/\.claude}, 'the real ~/.claude would come back';
     is $r->{argv}, [], 'bwrap never invoked';
 };
 

@@ -142,6 +142,12 @@ command pointing at `~/.claude/foo.sh` gets ENOENT inside the sandbox.
 Keep them in `~/.claude/hooks/` or `~/.claude/scripts/`; anywhere else in
 `$HOME` needs `--bind-ro`.
 
+`CLAUDE_CONFIG_DIR` is honoured: with it set, everything above that names
+`~/.claude/` or `~/.claude.json` lives under that directory instead, it
+gets an empty tmpfs of its own if it isn't under `$HOME`, and the variable
+is forwarded so the session reads the same root the host does. A relative
+value is refused.
+
 **Forwarded:** the filtered network, a minimal set of environment
 variables, and — only with `--allow-ssh` — your SSH agent socket. Every
 other env var, API tokens and cloud credentials included, is cleared so it

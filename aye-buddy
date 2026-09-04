@@ -287,7 +287,7 @@ sub validate_allow_host {
 # than guess which won.
 my %reserved_env = map { $_ => 1 } (
     qw(HOME USER LOGNAME PATH PWD
-       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK
+       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK CLAUDE_CONFIG_DIR
        XDG_CACHE_HOME npm_config_cache CARGO_HOME GOPATH),
     # Only set when the egress filter is on; without it the session is on the
     # host network and a kept proxy var is the only way to point it at one. The
@@ -434,38 +434,48 @@ if (-f "$project_dir/.git") {
          "  Not supported yet — run aye-buddy from the main checkout instead.");
 }
 
-my $home = $ENV{HOME} // fail("HOME is not set");
-my $claude_home = Cwd::abs_path("$home/.claude");
+sub validate_dir_env {
+    my ($name, $val) = @_;
+    defined $val or fail("$name is not set");
+    $val =~ m{^/} or fail("$name must be an absolute path: " . printable($val));
+    $val =~ /[\r\n]/ and fail("$name may not contain a newline: " . printable($val));
+    return $val;
+}
+
+my $home = validate_dir_env('HOME', $ENV{HOME});
+# claude keeps its state (and .claude.json) under CLAUDE_CONFIG_DIR when that is
+# set, ~/.claude otherwise. Everything bound from that state below follows it,
+# and the var is forwarded so the session reads the same root the host does.
+my $claude_dir = validate_dir_env('CLAUDE_CONFIG_DIR', $ENV{CLAUDE_CONFIG_DIR} // "$home/.claude");
+my $claude_home = Cwd::abs_path($claude_dir);
 require_overlay_support($project_dir, defined $claude_home && -d $claude_home ? $claude_home : $home);
-# The project dir is bound rw, so it must not overlap $HOME or ~/.claude, which
-# are tmpfs. Compare the raw $HOME as well: the mounts use it verbatim, so a
-# symlinked home can overlap the project dir under one name and not the other.
+my $claude_real = $claude_home // $claude_dir;
+# The project dir is bound rw, so it must not overlap $HOME or the state dir,
+# which are tmpfs. Compare the raw $HOME as well, for the same reason as above.
 for my $h (Cwd::abs_path($home) // (), $home) {
     fail(printable($project_dir) . " is your home directory or an ancestor of it;\n" .
          "  binding it read-write would expose the whole host home to the session.\n" .
          "  Run aye-buddy from a repository below \$HOME instead.")
         if under($h, $project_dir);
-    # Either direction: a repo under ~/.claude, and a repo ~/.claude symlinks into.
-    for my $claude ("$h/.claude", Cwd::abs_path("$h/.claude") // ()) {
-        fail(printable($project_dir) . " overlaps ~/.claude; binding it read-write\n" .
-             "  would hand the session the host's claude state — other projects'\n" .
-             "  transcripts, the OAuth token — that the sandbox exists to keep out.")
-            if under($claude, $project_dir) || under($project_dir, $claude);
-    }
 }
+# Either direction: a repo under the state dir, and a repo it symlinks into.
+fail(printable($project_dir) . " overlaps " . printable($claude_dir) . "; binding it read-write\n" .
+     "  would hand the session the host's claude state — other projects'\n" .
+     "  transcripts, the OAuth token — that the sandbox exists to keep out.")
+    if under($claude_real, $project_dir) || under($project_dir, $claude_real);
+# ~/.cache is bound last, over everything mounted into the state dir before it.
+fail(printable($claude_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
+     "  cache dir at; the claude state there would be covered by it.")
+    if under($claude_dir, "$home/.cache");
 
-# Disallow bind mounts under ~/.claude and the project .claude - we use
+# Disallow bind mounts under the state dir and the project .claude - we use
 # overlayfs there.
 my $proj_claude = "$project_dir/.claude";
 for my $bind (@extra_rw, @extra_ro) {
-    for my $h (Cwd::abs_path($home) // (), $home) {
-        for my $f ("$h/.claude", Cwd::abs_path("$h/.claude") // ()) {
-            fail(printable($bind) . " overlaps ~/.claude, which the sandbox builds\n" .
-                 "  its own view of; a bind there would either be covered by that view\n" .
-                 "  or hand the session the host's claude state.")
-                if under($bind, $f) || under($f, $bind);
-        }
-    }
+    fail(printable($bind) . " overlaps " . printable($claude_dir) . ", which the sandbox builds\n" .
+         "  its own view of; a bind there would either be covered by that view\n" .
+         "  or hand the session the host's claude state.")
+        if under($bind, $claude_real) || under($claude_real, $bind);
     for my $f ($proj_claude, Cwd::abs_path($proj_claude) // ()) {
         fail(printable($bind) . " is under the project's .claude, which the sandbox\n" .
              "  covers with its own read-only and throwaway mounts; the bind would\n" .
@@ -475,7 +485,7 @@ for my $bind (@extra_rw, @extra_ro) {
 }
 
 # Bind only this project state dir
-my $projects_dir = "$home/.claude/projects";
+my $projects_dir = "$claude_dir/projects";
 my $project_slug = do {
     my $p = $project_dir;
     utf8::decode($p);
@@ -510,13 +520,13 @@ if (@$cache_err || !-d $cache_dir) {
     fail("cannot create the sandbox cache dir " . printable($cache_dir)
        . ($msg ? ": " . printable($msg) : ''));
 }
-my $claude_json = "$home/.claude.json";
+my $claude_json = defined $ENV{CLAUDE_CONFIG_DIR} ? "$claude_dir/.claude.json" : "$home/.claude.json";
 unless (-e $claude_json) {
     open(my $fh, '>', $claude_json) or fail("cannot create $claude_json: $!");
     close $fh;
 }
 # Bound rw below, and a bind needs the file to exist to preserve OAuth token.
-my $creds = "$home/.claude/.credentials.json";
+my $creds = "$claude_dir/.credentials.json";
 unless (-e $creds) {
     sysopen(my $fh, $creds, O_WRONLY | O_CREAT | O_EXCL, 0600)
         or fail("cannot create the credentials file: " . printable($creds) . ": $!");
@@ -583,24 +593,26 @@ for my $wt ("$proj_claude/worktrees", "$project_dir/.git/worktrees") {
     }
     try_tmp_overlay($wt);
 }
-# ~/.claude is deliberately not bound: it stays an empty dir in the tmpfs $HOME
-try_ro("$home/.claude/settings.json");
-try_ro("$home/.claude/settings.local.json");
-try_ro("$home/.claude/CLAUDE.md");
-try_tmp_overlay("$home/.claude/commands");
-try_tmp_overlay("$home/.claude/agents");
-try_tmp_overlay("$home/.claude/skills");
-try_tmp_overlay("$home/.claude/output-styles");
-try_tmp_overlay("$home/.claude/plugins");
-try_tmp_overlay("$home/.claude/hooks");
-try_tmp_overlay("$home/.claude/scripts");
+# The state dir is deliberately not bound: it stays an empty dir in the tmpfs
+# $HOME, or a tmpfs of its own when CLAUDE_CONFIG_DIR puts it elsewhere.
+mount_rw('--tmpfs', $claude_dir) unless under($claude_dir, $home);
+try_ro("$claude_dir/settings.json");
+try_ro("$claude_dir/settings.local.json");
+try_ro("$claude_dir/CLAUDE.md");
+try_tmp_overlay("$claude_dir/commands");
+try_tmp_overlay("$claude_dir/agents");
+try_tmp_overlay("$claude_dir/skills");
+try_tmp_overlay("$claude_dir/output-styles");
+try_tmp_overlay("$claude_dir/plugins");
+try_tmp_overlay("$claude_dir/hooks");
+try_tmp_overlay("$claude_dir/scripts");
 # /statusline writes its script here by default, and settings.json points at it
-try_ro("$home/.claude/statusline-command.sh");
-try_ro("$home/.claude/mcp.json");
-try_ro("$home/.claude/.mcp.json");
+try_ro("$claude_dir/statusline-command.sh");
+try_ro("$claude_dir/mcp.json");
+try_ro("$claude_dir/.mcp.json");
 # Has to be rw, because of OAuth token refreshes
 bind_rw($creds);
-# ~/.claude/config.json is legacy, deliberately not mounted
+# config.json in the state dir is legacy, deliberately not mounted
 try_rw($transcript_dir);
 bind_rw($claude_json);
 bind_rw($cache_dir, "$home/.cache");
@@ -640,6 +652,7 @@ push @args,
     '--setenv', 'PWD', $project_dir,
     '--setenv', 'TERM', ($ENV{TERM} // 'xterm'),
     '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8');
+push @args, '--setenv', 'CLAUDE_CONFIG_DIR', $claude_dir if defined $ENV{CLAUDE_CONFIG_DIR};
 # Point the toolchains that don't follow XDG at the persistent cache
 push @args,
     '--setenv', 'npm_config_cache', "$home/.cache/npm",

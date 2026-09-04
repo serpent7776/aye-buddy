@@ -81,7 +81,8 @@ subtest 'NAME=VALUE and other junk names are rejected' => sub {
 subtest "names aye-buddy manages itself are refused" => sub {
     # Keeping one would either lose to ours or break the layer it belongs to.
     for my $name (qw(HOME PATH LL_RW LL_STRICT HTTPS_PROXY no_proxy CARGO_HOME
-                     XDG_CACHE_HOME SSH_AUTH_SOCK CLAUDE_CODE_SANDBOXED)) {
+                     XDG_CACHE_HOME SSH_AUTH_SOCK CLAUDE_CODE_SANDBOXED
+                     CLAUDE_CONFIG_DIR)) {
         local $ENV{$name} = 'x';
         my $r = run_aye('--keep-env', $name);
         is $r->{exit}, 1, "$name is refused";
