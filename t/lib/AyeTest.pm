@@ -46,7 +46,8 @@ sub _stub {
 # dirs under the repo's .claude, { cache_file => 1 }
 # plants a plain file where ~/.cache/aye-buddy would go, { claude_dirs =>
 # [NAMES] } creates those dirs under ~/.claude, { claude_files => [NAMES] }
-# plants plain files there instead, { bwrap_version => STRING }
+# plants plain files there instead, { memory_link => PATH } makes this
+# project's transcript memory/ a symlink to $root/PATH, { bwrap_version => STRING }
 # sets what the stub bwrap answers to --version (default: new enough),
 # { bwrap_version_status => N } the exit status of that answer,
 # { overlay_probe_status => N } / { lower_probe_status => N } /
@@ -79,6 +80,12 @@ sub run_aye {
     }
     make_path("$root/$repo/.claude/$_") for @{ $opts->{repo_claude_dirs} // [] };
     make_path("$root/home/.claude/$_") for @{ $opts->{claude_dirs} // [] };
+    if (my $link = $opts->{memory_link}) {
+        # claude's slug for a short ASCII path: every non-alphanumeric byte is a dash.
+        (my $slug = "$root/$repo") =~ s/[^A-Za-z0-9]/-/g;
+        make_path("$root/$link", "$root/home/.claude/projects/$slug");
+        symlink "$root/$link", "$root/home/.claude/projects/$slug/memory" or die "symlink: $!";
+    }
     for my $f (@{ $opts->{claude_files} // [] }) {
         open my $fh, '>', "$root/home/.claude/$f" or die "open: $!";
         close $fh;

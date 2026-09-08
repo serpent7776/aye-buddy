@@ -103,7 +103,8 @@ stack traces open correctly in your editor.
 ## What the session can see
 
 **Read-write:** the project root (only this one), this project's transcript
-dir under `~/.claude/projects/`, `~/.claude/.credentials.json`,
+dir under `~/.claude/projects/` (minus its `memory/`, below),
+`~/.claude/.credentials.json`,
 `~/.claude.json`, and a cache directory of aye-buddy's own (see
 [Caches](#caches)).
 
@@ -116,7 +117,11 @@ settings there (it's created empty when the repo has none, so the guard
 holds there too); and the flat `~/.claude/` config files a later
 host-side `claude` run would act on — `settings.json`,
 `settings.local.json`, `CLAUDE.md`, `mcp.json`, `.mcp.json`,
-`statusline-command.sh`.
+`statusline-command.sh`; and this project's `memory/` under its transcript
+dir — `claude` reads `MEMORY.md` from there into every later session of the
+project, host-side runs included, so a session can't leave the next one
+standing instructions through it (created empty when absent, like the
+project `.claude/`).
 
 **Visible, writes discarded:** the `~/.claude/` content dirs a later
 host-side `claude` run would load — `commands/`, `agents/`, `skills/`,
@@ -351,7 +356,10 @@ secrets out of `--keep-env`.
   writes there — `.claude/settings.local.json` — fail in-session; edit
   project-scoped config on the host. A project `.claude` that is a
   symlink, or not a directory, is refused, since a read-only bind would
-  expose a symlink's target instead of guarding it.
+  expose a symlink's target instead of guarding it. The same goes for
+  this project's `memory/` under its transcript dir: a session sees the
+  host's memories but can't save new ones, since a memory write
+  fails in-session. Add memories from a host-side `claude`, or by hand.
 - **Some `~/.claude` state doesn't persist.** Only this project's transcript
   dir is bound back, so prompt history (`history.jsonl`), file history and
   anything a newer `claude` keeps elsewhere under `~/.claude/` lives in the

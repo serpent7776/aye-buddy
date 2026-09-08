@@ -145,6 +145,33 @@ subtest '~/.claude is not bound wholesale' => sub {
     }
 };
 
+# memory/MEMORY.md is read into every later session of this project, host runs
+# included, so it is the one path under the rw transcript dir a session must not
+# write. The pin has to come after the transcript bind: bwrap's last mount wins.
+subtest 'the transcript memory dir is pinned read-only after the transcript bind' => sub {
+    my $r = run_aye();
+    is $r->{exit}, 0;
+    my @a = @{$r->{argv}};
+    my ($tr) = grep { $a[$_] eq '--bind-try' && $a[$_ + 2] =~ m{/\.claude/projects/} } 0 .. $#a - 2;
+    ok(defined $tr, 'the transcript dir is bound rw') or return;
+    my $mem = "$a[$tr + 2]/memory";
+    my ($pin) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 2] eq $mem } 0 .. $#a - 2;
+    ok(defined $pin, 'memory/ under it is bound ro') or return;
+    ok $pin > $tr, 'after the transcript bind, so the ro mount wins';
+    is $a[$pin + 1], $mem, 'from the host dir of the same name';
+    is sprintf('%04o', (stat $mem)[2] & oct('7777')), '0700', 'created 0700 when absent';
+    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
+    ok !(grep { $_->[1] eq $mem } @rw), 'and not also rw';
+};
+
+# A read-only bind follows symlinks: the target would be mounted, not guarded.
+subtest 'a symlinked transcript memory dir is refused' => sub {
+    my $r = run_aye({ memory_link => 'elsewhere' });
+    is $r->{exit}, 1, 'exits 1';
+    like $r->{err}, qr/memory is a symlink/, 'explains why';
+    is $r->{argv}, [], 'bwrap never invoked';
+};
+
 # A plain file where projects/ should be leaves the transcript dir uncreatable.
 # That costs persistence only — the sandbox's projects/ is tmpfs — so the run
 # must go ahead without the bind.
@@ -158,6 +185,8 @@ subtest 'an uncreatable transcript dir is a warning, not a refusal' => sub {
     is scalar(@tr), 1, 'the transcript bind is still requested';
     ok !-e $tr[0][0], 'as bind-try, with no source for it to find';
     ok !(grep { $_->[1] =~ m{/\.claude/projects\z} } @rw), 'and projects/ itself is not bound';
+    ok !(grep { $_->[1] =~ m{/memory\z} } bwrap_binds($r->{argv}, '--ro-bind')),
+        'and no memory pin without a transcript dir';
 };
 
 # The cache dir is what backs $HOME/.cache in the sandbox, so failing to create
