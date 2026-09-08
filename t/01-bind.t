@@ -434,6 +434,25 @@ subtest 'a CLAUDE_CONFIG_DIR under ~/.cache is refused' => sub {
     is $r->{argv}, [], 'bwrap never invoked';
 };
 
+# The state dir is created when missing; a plain file there used to warn about
+# transcripts and then die on .claude.json, two messages for one cause.
+subtest 'a CLAUDE_CONFIG_DIR that is not a directory is refused' => sub {
+    my $r = run_aye({ claude_files => ['cfg'], config_dir => 'home/.claude/cfg', config_dir_absent => 1 });
+    is $r->{exit}, 1;
+    like $r->{err}, qr/cfg is not a directory/, 'explains why';
+    unlike $r->{err}, qr/transcript/, 'with no transcript warning before it';
+    is $r->{argv}, [], 'bwrap never invoked';
+};
+
+subtest 'a missing CLAUDE_CONFIG_DIR is created' => sub {
+    my $r = run_aye({ config_dir => 'cfg', config_dir_absent => 1 });
+    is $r->{exit}, 0;
+    is $r->{err}, '', 'silently';
+    my $cfg = setenv_value($r->{argv}, 'CLAUDE_CONFIG_DIR');
+    ok -d $cfg, 'as a directory';
+    is sprintf('%04o', (stat $cfg)[2] & oct('7777')), '0700', 'mode 0700';
+};
+
 # A relative one is resolved against the cwd by claude and would be a path
 # under the project dir here; refusing it is simpler than following that.
 subtest 'a relative CLAUDE_CONFIG_DIR is refused' => sub {

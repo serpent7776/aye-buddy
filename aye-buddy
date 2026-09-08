@@ -448,6 +448,8 @@ my $home = validate_dir_env('HOME', $ENV{HOME});
 # set, ~/.claude otherwise. Everything bound from that state below follows it,
 # and the var is forwarded so the session reads the same root the host does.
 my $claude_dir = validate_dir_env('CLAUDE_CONFIG_DIR', $ENV{CLAUDE_CONFIG_DIR} // "$home/.claude");
+fail(printable($claude_dir) . " is not a directory; the claude state dir must be one")
+    if -e $claude_dir && !-d _;
 my $claude_home = Cwd::abs_path($claude_dir);
 require_overlay_support($project_dir, defined $claude_home && -d $claude_home ? $claude_home : $home);
 my $claude_real = $claude_home // $claude_dir;

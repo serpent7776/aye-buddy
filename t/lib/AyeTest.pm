@@ -54,8 +54,8 @@ sub _stub {
 # { sandbox_probe_status => N } the exit status of the startup
 # kernel-overlay/lower-layer/control probes (bwrap argv ending in `true`),
 # { config_dir => NAME } creates $root/NAME and points CLAUDE_CONFIG_DIR at
-# it, { env => { NAME => VALUE } } sets those vars verbatim in aye-buddy's
-# environment.
+# it ({ config_dir_absent => 1 } points without creating), { env => { NAME =>
+# VALUE } } sets those vars verbatim in aye-buddy's environment.
 sub run_aye {
     my $opts = ref $_[0] eq 'HASH' ? shift : {};
     my @args = @_;
@@ -69,7 +69,7 @@ sub run_aye {
         symlink "$root/$link", "$root/home/.claude" or die "symlink: $!";
     }
     else { make_path("$root/home/.claude") }
-    make_path("$root/$opts->{config_dir}") if defined $opts->{config_dir};
+    make_path("$root/$opts->{config_dir}") if defined $opts->{config_dir} && !$opts->{config_dir_absent};
     if (my $link = $opts->{repo_claude_link}) {
         make_path("$root/$link");
         symlink "$root/$link", "$root/$repo/.claude" or die "symlink: $!";
