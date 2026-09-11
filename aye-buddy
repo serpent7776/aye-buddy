@@ -17,6 +17,11 @@ use File::Basename qw(dirname);
 use File::Temp ();
 
 our $VERSION = '0.1.0';
+# Short commit hash, filled in by `git archive` (export-subst, so GitHub's
+# tgz/zip carry it) or by install.sh from a checkout. Left as the placeholder
+# when neither ran, in which case only the version is shown.
+my $COMMIT = '$Format:%h$';
+$VERSION .= " ($COMMIT)" unless $COMMIT =~ /^\$Format/;
 
 sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
