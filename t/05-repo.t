@@ -23,8 +23,8 @@ subtest 'a HOME that is not an absolute path is rejected' => sub {
 };
 
 # $HOME is a tmpfs the project bind is layered over, so a repo at or above it
-# would hand the session the real host home — every other project's transcripts,
-# ~/.ssh, ~/.bashrc — with the ~/.claude allowlist bypassed entirely.
+# would hand the session the real host home — ~/.ssh, ~/.bashrc, the host's
+# own ~/.claude with every project's transcripts.
 subtest 'a repo at $HOME is rejected' => sub {
     rejects({ repo_name => 'home' }, qr/home directory or an ancestor/);
 };
@@ -33,8 +33,8 @@ subtest 'a repo above $HOME is rejected' => sub {
     rejects({ repo_name => '.' }, qr/home directory or an ancestor/);
 };
 
-# Same bypass one level down: ~/.claude is a tmpfs with an allowlist over it, and
-# a repo there is below $HOME, so the $HOME guard alone lets it through.
+# One level down: ~/.claude is where the session's own state dir is mounted,
+# and a repo there is below $HOME, so the $HOME guard alone lets it through.
 subtest 'a repo at ~/.claude is rejected' => sub {
     rejects({ repo_name => 'home/.claude' }, qr/overlaps .*\/\.claude/);
 };

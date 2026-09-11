@@ -4,16 +4,15 @@
 use strict;
 use warnings;
 use Cwd ();
-use Encode ();
 use POSIX ();
 use Errno qw(EAGAIN);
-use Fcntl qw(F_SETFD O_WRONLY O_CREAT O_EXCL);
+use Fcntl qw(F_SETFD O_RDONLY O_WRONLY O_CREAT O_EXCL LOCK_SH LOCK_EX LOCK_NB);
 use IO::Socket::INET;
 use Getopt::Long qw(GetOptions);
 use FindBin qw($RealBin);
 use lib $RealBin;
 use AyeSeccomp qw(arm_seccomp SECCOMP_FD_TOKEN PROXY_TOKEN);
-use File::Path qw(make_path);
+use File::Path qw(make_path remove_tree);
 use File::Basename qw(dirname);
 use File::Temp ();
 
@@ -21,6 +20,8 @@ our $VERSION = '0.1.0';
 
 sub fail { print STDERR "aye-buddy: $_[0]\n"; exit 1 }
 sub warning { print STDERR "aye-buddy: warning: $_[0]\n" }
+# The first message out of a File::Path error list, or undef when it is empty
+sub path_error { my ($err) = @_; my ($msg) = map { values %$_ } @$err; return $msg }
 
 # Values we echo back — argv, the project path — can carry terminal escapes, so
 # reduce them to printable ASCII first. Keeping non-ASCII would mean deciding it
@@ -66,11 +67,11 @@ sub require_overlay_support {
     return if $probe->(map { ('--overlay-src', $_, '--tmp-overlay', $_) } @dirs);
     my $tmp = File::Temp::tempdir(CLEANUP => 1);
     fail("the kernel refuses a filesystem under " . join(' or ', map { printable($_) } @dirs)
-       . "\n  as an overlayfs lower layer, which the .claude overlays need")
+       . "\n  as an overlayfs lower layer, which the worktree overlays need")
         if $probe->('--overlay-src', $tmp, '--tmp-overlay', $tmp);
     fail($probe->()
         ? "the kernel does not allow unprivileged overlayfs (5.11, or a vendor"
-          . " backport), which the .claude overlays need"
+          . " backport), which the worktree overlays need"
         : "bwrap cannot create a sandbox here at all; unprivileged user"
           . " namespaces may be disabled on this host");
 }
@@ -129,6 +130,10 @@ options:
                             only 443 is allowed (repeatable)
   --keep-env NAME           pass this environment variable through into the
                             session instead of clearing it (repeatable)
+  --reseed                  copy the host claude config (settings, skills,
+                            plugins, ...) into this project's sandbox state
+                            again, replacing the session's copy; transcripts,
+                            memory and .claude.json are kept
   --no-net-filter           turn off egress filtering, use the host network
   --no-lan-filter           let the session reach same-subnet (LAN) hosts
                             directly, around the proxy
@@ -181,12 +186,16 @@ USAGE
 #   --allow-ssh forwards $SSH_AUTH_SOCK into the sandbox. Opt-in because an agent
 #     can't scope a signature to one destination: the session can have the host
 #     agent authenticate to anything it can reach, for the session's lifetime.
+#   --reseed replaces the host-config part of this project's sandbox state with
+#     a fresh copy from the host. The copy is made once otherwise, so host-side
+#     edits don't reach a project's sandbox until asked for.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
 my $lan_filter   = 1;
 my $allow_reserved = 0;
 my $allow_ssh    = 0;
+my $reseed       = 0;
 my $agent        = 'claude';
 my ($show_help, $show_version);
 my (@extra_rw, @extra_ro, @extra_hosts, @keep_env);
@@ -195,6 +204,7 @@ my %opt_spec = ('allow-bwrap'  => \$allow_bwrap,
                'lan-filter!'   => \$lan_filter,
                'allow-reserved' => \$allow_reserved,
                'allow-ssh'     => \$allow_ssh,
+               'reseed'        => \$reseed,
                'agent=s'       => \$agent,
                'bind:s'        => \@extra_rw,
                'bind-ro:s'     => \@extra_ro,
@@ -218,7 +228,7 @@ for my $spec (keys %opt_spec) {
 
 on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
-require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the .claude overlays');
+require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the worktree overlays');
 
 my $agent_spec = $AGENTS{$agent}
     or fail("unknown agent: " . printable($agent)
@@ -444,17 +454,21 @@ sub validate_dir_env {
 }
 
 my $home = validate_dir_env('HOME', $ENV{HOME});
-# claude keeps its state (and .claude.json) under CLAUDE_CONFIG_DIR when that is
-# set, ~/.claude otherwise. Everything bound from that state below follows it,
-# and the var is forwarded so the session reads the same root the host does.
 my $claude_dir = validate_dir_env('CLAUDE_CONFIG_DIR', $ENV{CLAUDE_CONFIG_DIR} // "$home/.claude");
 fail(printable($claude_dir) . " is not a directory; the claude state dir must be one")
     if -e $claude_dir && !-d _;
-my $claude_home = Cwd::abs_path($claude_dir);
-require_overlay_support($project_dir, defined $claude_home && -d $claude_home ? $claude_home : $home);
-my $claude_real = $claude_home // $claude_dir;
-# The project dir is bound rw, so it must not overlap $HOME or the state dir,
-# which are tmpfs. Compare the raw $HOME as well, for the same reason as above.
+unless (-e $claude_dir) {
+    make_path($claude_dir, { mode => 0700, error => \my $err });  ## no critic (ProhibitLeadingZeros)
+    my $msg = path_error($err);
+    fail("cannot create " . printable($claude_dir) . ": " . printable($msg)) if defined $msg;
+}
+
+require_overlay_support($project_dir);
+
+my $claude_real = Cwd::abs_path($claude_dir) // $claude_dir;
+# The project dir is bound rw, so it must not overlap $HOME, which is tmpfs, or
+# the state dir, where the session's own copy is mounted. Compare the raw $HOME
+# as well, for the same reason as above.
 for my $h (Cwd::abs_path($home) // (), $home) {
     fail(printable($project_dir) . " is your home directory or an ancestor of it;\n" .
          "  binding it read-write would expose the whole host home to the session.\n" .
@@ -462,23 +476,28 @@ for my $h (Cwd::abs_path($home) // (), $home) {
         if under($h, $project_dir);
 }
 # Either direction: a repo under the state dir, and a repo it symlinks into.
-fail(printable($project_dir) . " overlaps " . printable($claude_dir) . "; binding it read-write\n" .
-     "  would hand the session the host's claude state — other projects'\n" .
-     "  transcripts, the OAuth token — that the sandbox exists to keep out.")
+fail(printable($project_dir) . " overlaps " . printable($claude_dir) . ", where the sandbox\n" .
+     "  mounts the session's own claude state; one would cover the other.\n" .
+     "  Run aye-buddy from a repository elsewhere instead.")
     if under($claude_real, $project_dir) || under($project_dir, $claude_real);
 # ~/.cache is bound last, over everything mounted into the state dir before it.
 fail(printable($claude_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
      "  cache dir at; the claude state there would be covered by it.")
     if under($claude_dir, "$home/.cache");
 
-# Disallow bind mounts under the state dir and the project .claude - we use
-# overlayfs there.
+# Disallow bind mounts under the state dir and at .claude.json, where the
+# session's own copies are mounted, and the project .claude, where we use
+# overlayfs.
+my $claude_json = defined $ENV{CLAUDE_CONFIG_DIR} ? "$claude_dir/.claude.json" : "$home/.claude.json";
 my $proj_claude = "$project_dir/.claude";
 for my $bind (@extra_rw, @extra_ro) {
-    fail(printable($bind) . " overlaps " . printable($claude_dir) . ", which the sandbox builds\n" .
-         "  its own view of; a bind there would either be covered by that view\n" .
-         "  or hand the session the host's claude state.")
+    fail(printable($bind) . " overlaps " . printable($claude_dir) . ", where the sandbox mounts\n" .
+         "  its own copy of the claude state; a bind there would either be covered\n" .
+         "  by that copy or hand the session the host's.")
         if under($bind, $claude_real) || under($claude_real, $bind);
+    fail(printable($bind) . " is " . printable($claude_json) . ", where the sandbox mounts\n" .
+         "  its own copy; the bind would be covered by it.")
+        if under($claude_json, $bind);
     for my $f ($proj_claude, Cwd::abs_path($proj_claude) // ()) {
         fail(printable($bind) . " is under the project's .claude, which the sandbox\n" .
              "  covers with its own read-only and throwaway mounts; the bind would\n" .
@@ -488,7 +507,7 @@ for my $bind (@extra_rw, @extra_ro) {
 }
 
 # The project .claude and the worktree dirs are checked and created here,
-# before any host-side dir is created, so a refusal leaves nothing behind.
+# before the state dir is seeded, so a refusal leaves no state behind.
 fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
    . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
 unless (-e $proj_claude) {
@@ -557,67 +576,210 @@ if (-r $seccomp_blob) {
     warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
 }
 
-# claude names the dir after the cwd: every UTF-16 code unit outside [A-Za-z0-9]
-# becomes a dash, and a name past 200 units is cut there and suffixed with a
-# base-36 hash of the path. Kept in step with claude by hand.
-sub claude_slug {
-    my ($path) = @_;
-    my @units = unpack 'n*', Encode::encode('UTF-16BE', Encode::decode('UTF-8', $path));
-    my $slug = join '', map { chr($_) =~ /[A-Za-z0-9]/ ? chr($_) : '-' } @units;
-    return $slug if @units <= 200;
-    require Math::BigInt;
-    my $h = 0;
-    $h = unpack 'l', pack 'l', $h * 31 + $_ for @units;   # JS int32 arithmetic
-    return substr($slug, 0, 200) . '-' . lc Math::BigInt->new(abs $h)->to_base(36);
-}
-
-# Bind only this project state dir
-my $projects_dir = "$claude_dir/projects";
-my $project_slug = claude_slug($project_dir);
-if (opendir my $dh, $projects_dir) {
-    # Dirs only: a stray file in there says nothing about claude's naming.
-    my ($odd) = grep { !/^\./ && /[^A-Za-z0-9-]/ && -d "$projects_dir/$_" } readdir $dh;
-    closedir $dh;
-    warning("~/.claude/projects holds an entry this build cannot derive ("
-          . printable($odd) . "); claude's naming has changed and session\n"
-          . "  transcripts may not persist across runs")
-        if defined $odd;
-}
-#  Keep going in case of a slug longer than NAME_MAX or an unwritable ~/.claude.
-my $transcript_dir = "$projects_dir/$project_slug";
-make_path($transcript_dir, { mode => 0700, error => \my $mkerr });  ## no critic (ProhibitLeadingZeros)
-if (@$mkerr || !-d $transcript_dir) {
-    my ($msg) = map { values %$_ } @$mkerr;
-    warning("cannot create the session transcript dir " . printable($transcript_dir)
-          . ($msg ? ":\n  " . printable($msg) : '')
-          . "\n  session transcripts will not persist across runs");
-}
 # A relative XDG_CACHE_HOME is invalid per the spec; ignore it
 my $xdg_cache = $ENV{XDG_CACHE_HOME};
 my $cache_dir = (defined $xdg_cache && $xdg_cache =~ m{^/} ? $xdg_cache
                                                           : "$home/.cache") . '/aye-buddy';
 make_path($cache_dir, { mode => 0700, error => \my $cache_err });  ## no critic (ProhibitLeadingZeros)
 if (@$cache_err || !-d $cache_dir) {
-    my ($msg) = map { values %$_ } @$cache_err;
+    my $msg = path_error($cache_err);
     fail("cannot create the sandbox cache dir " . printable($cache_dir)
        . ($msg ? ": " . printable($msg) : ''));
 }
-my $claude_json = defined $ENV{CLAUDE_CONFIG_DIR} ? "$claude_dir/.claude.json" : "$home/.claude.json";
-unless (-e $claude_json) {
-    open(my $fh, '>', $claude_json) or fail("cannot create $claude_json: $!");
-    close $fh;
+
+# The session's claude state: a dir of aye-buddy's own per project, mounted at the state dir path.
+my $xdg_state = $ENV{XDG_STATE_HOME};
+my $state_root = (defined $xdg_state && $xdg_state =~ m{^/} ? $xdg_state
+                                                            : "$home/.local/state") . '/aye-buddy';
+my $agent_state = "$state_root/$agent";
+# Under a path the session sees it would hand every project's state to any
+# session; over one it would be covered, or bind that path's content back.
+# The claude state dir is what it is seeded from, so that one neither way.
+# Checked before anything is created, so a refused root leaves nothing behind.
+for my $root (Cwd::abs_path($state_root) // (), $state_root) {
+    for my $src ($project_dir, Cwd::abs_path($cache_dir) // $cache_dir, $claude_real,
+                 @extra_rw, @extra_ro, qw(/usr /etc /opt /nix)) {
+        fail(printable($state_root) . " overlaps " . printable($src) . ";\n" .
+             "  the sandbox state dir must not overlap a path the session sees,\n" .
+             "  nor the claude state dir it is seeded from")
+            if under($root, $src) || under($src, $root);
+    }
 }
+make_path($agent_state, { mode => 0700, error => \my $state_err });  ## no critic (ProhibitLeadingZeros)
+if (@$state_err || !-d $agent_state) {
+    my $msg = path_error($state_err);
+    fail("cannot create the sandbox state dir " . printable($agent_state)
+       . ($msg ? ": " . printable($msg) : ''));
+}
+my $state_real = Cwd::abs_path($state_root) // $state_root;
+# One dir per project, named after its path: '/' becomes '-', and '-' and '_'
+# become '__' and '_-', so no two paths share a name. A '_' is then never
+# followed by a letter, so a name plus '_lock' or '_new' is no project's.
+(my $state_name = $project_dir) =~ s{([/_-])}{ $1 eq '/' ? '-' : $1 eq '-' ? '__' : '_-' }ge;
+length $state_name <= 250
+    or fail("the project path is too long to name a state dir after: " . printable($project_dir));
+my $state = "$agent_state/$state_name";
+fail(printable($state) . " is a symlink; binding it would expose its target") if -l $state;
+
+# Sessions hold the state dir shared for their lifetime; a seed, first or
+# --reseed, takes it exclusively, so it can't pull a running session's config
+# out from under it, nor build over what another first run is still copying.
+# The lock file sits beside the dir, outside every bind, where a session can't
+# touch it; the kernel drops the lock with the last process holding it.
+my $lock_file = "${state}_lock";
+sysopen(my $lock_fh, $lock_file, O_RDONLY | O_CREAT, 0600)
+    or fail("cannot open " . printable($lock_file) . ": $!");
+my $exclusive = $reseed || !-e $state;
+if ($exclusive && !flock($lock_fh, LOCK_EX | LOCK_NB)) {
+    fail("a session is running in this project; exit it before --reseed") if $reseed;
+    # A first run that got in ahead may have finished and be holding the dir as
+    # a session by now; then this is a session too, and takes the shared hold.
+    -e $state or fail("another aye-buddy is seeding this project's state; wait for it");
+    $exclusive = 0;
+}
+if (!$exclusive) {
+    flock($lock_fh, LOCK_SH | LOCK_NB)
+        or fail("another aye-buddy is seeding this project's state; wait for it");
+}
+# Decided under the lock: a first run that got in ahead has finished by now.
+my $fresh = !-e $state;
+
+# What the host contributes: the config a host-side claude loads. Copied, so the
+# session's edits stay its own. Transcripts, history and everything else are
+# the session's from the start.
+my @seed = qw(settings.json settings.local.json CLAUDE.md mcp.json .mcp.json
+              keybindings.json statusline-command.sh
+              commands agents skills output-styles rules workflows themes
+              plugins hooks scripts);
+
+# cp -R -H -p is the copy wanted, and the flags are POSIX: recurse, follow
+# the item itself when it is a symlink, as a dotfiles manager leaves it, keep
+# links below it as links, and keep modes, a dir's set once it is filled.
+sub copy_tree {
+    my ($src, $dst) = @_;
+    system('cp', '-R', '-H', '-p', '--', $src, $dst) == 0
+        or fail("cannot copy " . printable($src) . ($? == -1 ? ": $!" : " (cp exited " . ($? >> 8) . ")"));
+    return;
+}
+
+sub seed_item {
+    my ($item, $dst) = @_;
+    my $src = "$claude_dir/$item";
+    unless (-e $src) {
+        warning("not seeded: " . printable($src) . " is a dangling symlink") if -l $src;
+        return;
+    }
+    # Followed, but not into what holds other projects' state: the claude dir's
+    # projects/, anything above the claude dir, and the state root.
+    my $real = Cwd::abs_path($src);
+    if (-l $src && defined $real
+        && (under($real, "$claude_real/projects") || under($claude_real, $real)
+            || under($real, $state_real) || under($state_real, $real))) {
+        warning("not seeded: " . printable($src) . " points at " . printable($real)
+              . ",\n  which holds other projects' state");
+        return;
+    }
+    copy_tree($src, $dst);
+    return;
+}
+
+# .claude.json holds onboarding state, the theme, MCP servers and a map keyed
+# by project path. Seeded with the map cut to this project - the other entries
+# name every repo the host has opened - and the session's from then on, so no
+# host-side claude reads what a session wrote (user-scoped MCP servers are
+# commands it would run).
+sub seed_claude_json {
+    my ($dir) = @_;
+    my $doc = '';
+    if (-s $claude_json) {
+        open(my $in, '<:raw', $claude_json) or fail("cannot read " . printable($claude_json) . ": $!");
+        my $raw = do { local $/; <$in> };
+        close $in;
+        require JSON::PP;   # a first run only
+        my $json = JSON::PP->new->utf8->canonical;
+        my $data = eval { $json->decode($raw) };
+        defined $data or fail("cannot parse " . printable($claude_json) . " to seed the session's copy: "
+                            . printable($@ =~ s/\s+\z//r));
+        if (ref $data eq 'HASH' && ref $data->{projects} eq 'HASH') {
+            my $mine = $data->{projects}{$project_dir};
+            $data->{projects} = defined $mine ? { $project_dir => $mine } : {};
+        }
+        $doc = $json->encode($data);
+    }
+    my $f = "$dir/.claude.json";
+    sysopen(my $out, $f, O_WRONLY | O_CREAT | O_EXCL, 0600)
+        or fail("cannot create " . printable($f) . ": $!");
+    print {$out} $doc;
+    close $out or fail("cannot write " . printable($f) . ": $!");
+    return;
+}
+
+sub remove_path {
+    my ($path) = @_;
+    return unless -l $path || -e $path;
+    # A dir left unreadable, by a copy that failed or by a session, can't be
+    # removed as it is. A real dir only: chmod would follow a link's target.
+    if (-d $path && !-l $path) {
+        system('chmod', '-R', 'u+rwX', '--', $path) == 0
+            or fail("cannot chmod " . printable($path) . ($? == -1 ? ": $!" : " (chmod exited " . ($? >> 8) . ")"));
+    }
+    remove_tree($path, { error => \my $err });
+    my $msg = path_error($err);
+    fail("cannot remove " . printable($path) . ": " . printable($msg)) if defined $msg;
+    return;
+}
+
+sub create_empty {
+    my ($f) = @_;
+    sysopen(my $fh, $f, O_WRONLY | O_CREAT | O_EXCL, 0600)
+        or fail("cannot create " . printable($f) . ": $!");
+    close $fh;
+    return;
+}
+
+if ($fresh) {
+    print STDERR "aye-buddy: seeding the sandbox claude state " . printable($state)
+               . "\n  from " . printable($claude_dir) . "\n";
+    my $build = "${state}_new";
+    remove_path($build);
+    mkdir $build, 0700 or fail("cannot create " . printable($build) . ": $!");  ## no critic (ProhibitLeadingZeros)
+    seed_item($_, "$build/$_") for @seed;
+    seed_claude_json($build);
+    create_empty("$build/.credentials.json");
+    rename $build, $state or fail("cannot rename " . printable($build) . " into place: $!");
+}
+else {
+    fail(printable($state) . " is not a directory") unless -d $state;
+    if ($reseed) {
+        print STDERR "aye-buddy: reseeding the sandbox claude state " . printable($state)
+                   . "\n  from " . printable($claude_dir) . "\n";
+        my $stage = "${state}_new";
+        remove_path($stage);
+        mkdir $stage, 0700 or fail("cannot create " . printable($stage) . ": $!");  ## no critic (ProhibitLeadingZeros)
+        seed_item($_, "$stage/$_") for @seed;
+        for my $item (@seed) {
+            remove_path("$state/$item");
+            next unless -l "$stage/$item" || -e "$stage/$item";
+            rename "$stage/$item", "$state/$item"
+                or fail("cannot rename " . printable("$stage/$item") . " into place: $!");
+        }
+        rmdir $stage or fail("cannot remove " . printable($stage) . ": $!");
+    }
+    for my $f ("$state/.claude.json", "$state/.credentials.json") {
+        fail(printable($f) . " is a symlink; binding it would expose its target") if -l $f;
+        create_empty($f) unless -e $f;
+        fail(printable($f) . " is not a regular file") unless -f $f;
+    }
+}
+# The seed is done; drop to the shared hold a session keeps.
+flock($lock_fh, LOCK_SH) or fail("cannot re-lock " . printable($lock_file) . ": $!") if $exclusive;
+
 # Bound rw below, and a bind needs the file to exist to preserve OAuth token.
 my $creds = "$claude_dir/.credentials.json";
-unless (-e $creds) {
-    sysopen(my $fh, $creds, O_WRONLY | O_CREAT | O_EXCL, 0600)
-        or fail("cannot create the credentials file: " . printable($creds) . ": $!");
-    close $fh;
-}
+create_empty($creds) unless -e $creds;
 
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
-sub try_rw   { my ($s, $d) = @_; $d //= $s; push @args, '--bind-try',    $s, $d; push @ll_rw, $d }
 sub bind_ro  { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind',     $s, $d; push @ll_ro, $d }
 sub try_ro   { my ($s, $d) = @_; $d //= $s; push @args, '--ro-bind-try', $s, $d; push @ll_ro, $d }
 sub mount_rw { push @args, $_[0], $_[1];                  push @ll_rw, $_[1] } # --tmpfs/--proc/--dev
@@ -662,38 +824,13 @@ try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
 bind_ro($proj_claude);
 try_tmp_overlay($_) for @worktree_dirs;
-# The state dir is deliberately not bound: it stays an empty dir in the tmpfs
-# $HOME, or a tmpfs of its own when CLAUDE_CONFIG_DIR puts it elsewhere.
-mount_rw('--tmpfs', $claude_dir) unless under($claude_dir, $home);
-try_ro("$claude_dir/settings.json");
-try_ro("$claude_dir/settings.local.json");
-try_ro("$claude_dir/CLAUDE.md");
-try_tmp_overlay("$claude_dir/commands");
-try_tmp_overlay("$claude_dir/agents");
-try_tmp_overlay("$claude_dir/skills");
-try_tmp_overlay("$claude_dir/output-styles");
-try_tmp_overlay("$claude_dir/plugins");
-try_tmp_overlay("$claude_dir/hooks");
-try_tmp_overlay("$claude_dir/scripts");
-# /statusline writes its script here by default, and settings.json points at it
-try_ro("$claude_dir/statusline-command.sh");
-try_ro("$claude_dir/mcp.json");
-try_ro("$claude_dir/.mcp.json");
-# Has to be rw, because of OAuth token refreshes
+# The session's claude state, at the path claude looks for it. Nothing of the
+# host's is mounted there besides the token below.
+bind_rw($state, $claude_dir);
+bind_rw("$state/.claude.json", $claude_json) unless defined $ENV{CLAUDE_CONFIG_DIR};
+# Has to be rw, because of OAuth token refreshes. After the state bind, so the
+# host's token is what claude finds at that path inside it.
 bind_rw($creds);
-# config.json in the state dir is legacy, deliberately not mounted
-try_rw($transcript_dir);
-if (-d $transcript_dir) {
-    my $memory_dir = "$transcript_dir/memory";
-    fail(printable($memory_dir) . " is a symlink; binding it read-only would expose its target")
-        if -l $memory_dir;
-    unless (-e $memory_dir) {
-        mkdir $memory_dir, 0700 or fail("cannot create " . printable($memory_dir) . ": $!");  ## no critic (ProhibitLeadingZeros)
-    }
-    fail(printable($memory_dir) . " is not a directory") unless -d $memory_dir;
-    bind_ro($memory_dir);
-}
-bind_rw($claude_json);
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");

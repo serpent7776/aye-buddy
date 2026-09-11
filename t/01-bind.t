@@ -103,6 +103,8 @@ subtest 'caches persist in our own dir, not the host ones' => sub {
     ok $cache, 'something is mounted at $HOME/.cache';
     like $cache->[0], qr{/\.cache/aye-buddy\z}, 'backed by our own subdir';
     isnt $cache->[0], $cache->[1], 'the host ~/.cache itself is not the source';
+    # Toolchain caches take source and tokens; not for other users to read.
+    is sprintf('%04o', (stat $cache->[0])[2] & oct('7777')), '0700', 'created 0700';
 
     # The toolchains that ignore XDG_CACHE_HOME are pointed at it explicitly.
     my %env = do {
@@ -112,81 +114,6 @@ subtest 'caches persist in our own dir, not the host ones' => sub {
     like $env{npm_config_cache}, qr{/\.cache/npm\z}, 'npm cache redirected';
     like $env{CARGO_HOME},       qr{/\.cache/cargo\z}, 'cargo home redirected';
     like $env{GOPATH},           qr{/\.cache/go\z}, 'GOPATH redirected';
-};
-
-# ~/.claude is an allowlist, not a rw bind with ro patches over it: nothing under
-# it exists in the sandbox unless it is named. A regression here is invisible at
-# runtime (claude works fine either way) and hands a session the host's config
-# dir, so assert the shape rather than the individual entries.
-subtest '~/.claude is not bound wholesale' => sub {
-    my $r = run_aye();
-    is $r->{exit}, 0;
-    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
-    ok !(grep { $_->[1] =~ m{/\.claude\z} } @rw),
-        'no rw bind of the ~/.claude dir itself';
-
-    my %env = do {
-        my @a = @{$r->{argv}};
-        map { $a[$_ + 1] => $a[$_ + 2] } grep { $a[$_] eq '--setenv' } 0 .. $#a - 2;
-    };
-    my ($project) = map { $_->[1] } grep { $_->[1] eq $_->[0] && $_->[1] =~ m{/repo\z} } @rw;
-    ok $project, 'the project dir is bound rw';
-
-    # Only this project's transcript dir comes back, under claude's own naming.
-    my @projects = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
-    is scalar(@projects), 1, 'exactly one transcript dir is writable';
-    like $projects[0][1], qr{\A\Q$env{HOME}/.claude/projects/\E-.*-repo\z},
-        'and it is this project\'s';
-
-    # Transcripts hold source and pasted secrets; claude keeps projects/ 0700,
-    # so when aye-buddy is the one creating it, it must not be world-readable.
-    for my $d ("$env{HOME}/.claude/projects", $projects[0][1], "$env{HOME}/.cache/aye-buddy") {
-        is sprintf('%04o', (stat $d)[2] & oct('7777')), '0700', "$d is 0700";
-    }
-};
-
-# memory/MEMORY.md is read into every later session of this project, host runs
-# included, so it is the one path under the rw transcript dir a session must not
-# write. The pin has to come after the transcript bind: bwrap's last mount wins.
-subtest 'the transcript memory dir is pinned read-only after the transcript bind' => sub {
-    my $r = run_aye();
-    is $r->{exit}, 0;
-    my @a = @{$r->{argv}};
-    my ($tr) = grep { $a[$_] eq '--bind-try' && $a[$_ + 2] =~ m{/\.claude/projects/} } 0 .. $#a - 2;
-    ok(defined $tr, 'the transcript dir is bound rw') or return;
-    my $mem = "$a[$tr + 2]/memory";
-    my ($pin) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 2] eq $mem } 0 .. $#a - 2;
-    ok(defined $pin, 'memory/ under it is bound ro') or return;
-    ok $pin > $tr, 'after the transcript bind, so the ro mount wins';
-    is $a[$pin + 1], $mem, 'from the host dir of the same name';
-    is sprintf('%04o', (stat $mem)[2] & oct('7777')), '0700', 'created 0700 when absent';
-    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
-    ok !(grep { $_->[1] eq $mem } @rw), 'and not also rw';
-};
-
-# A read-only bind follows symlinks: the target would be mounted, not guarded.
-subtest 'a symlinked transcript memory dir is refused' => sub {
-    my $r = run_aye({ memory_link => 'elsewhere' });
-    is $r->{exit}, 1, 'exits 1';
-    like $r->{err}, qr/memory is a symlink/, 'explains why';
-    is $r->{argv}, [], 'bwrap never invoked';
-};
-
-# A plain file where projects/ should be leaves the transcript dir uncreatable.
-# That costs persistence only — the sandbox's projects/ is tmpfs — so the run
-# must go ahead without the bind.
-subtest 'an uncreatable transcript dir is a warning, not a refusal' => sub {
-    my $r = run_aye({ claude_files => ['projects'] });
-    is $r->{exit}, 0, 'still launches';
-    like $r->{err}, qr/cannot create the session transcript dir/, 'says so';
-    like $r->{err}, qr/will not persist/, 'and what it costs';
-    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
-    my @tr = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
-    is scalar(@tr), 1, 'the transcript bind is still requested';
-    ok !-e $tr[0][0], 'as bind-try, with no source for it to find';
-    ok !(grep { $_->[1] =~ m{/\.claude/projects\z} } @rw), 'and projects/ itself is not bound';
-    ok !(grep { $_->[1] =~ m{/memory\z} } bwrap_binds($r->{argv}, '--ro-bind')),
-        'and no memory pin without a transcript dir';
 };
 
 # The cache dir is what backs $HOME/.cache in the sandbox, so failing to create
@@ -199,105 +126,14 @@ subtest 'an uncreatable cache dir fails cleanly' => sub {
     is $r->{argv}, [], 'bwrap never invoked';
 };
 
-# The slug rule belongs to claude, so pin the name a known directory has to
-# produce. Deriving the expectation with the implementation's own regex would
-# follow any future change to it, including a wrong one.
-subtest 'the transcript dir name follows claude\'s slug rule' => sub {
-    my $r = run_aye({ repo_name => 'My Proj..v2_x' });
-    is $r->{exit}, 0;
-    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
-    my ($projects) = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
-    ok $projects, 'a transcript dir is bound';
-
-    my ($slug) = $projects->[1] =~ m{/\.claude/projects/(.+)\z};
-    like $slug, qr/\A-/, 'the leading separator becomes a dash';
-    like $slug, qr/\Q-My-Proj--v2-x\E\z/,
-        'one dash per non-alphanumeric, runs kept, case preserved';
-};
-
-# claude's rule runs over UTF-16 code units, so a character outside the BMP is
-# two dashes, and a name past 200 units is cut there and suffixed with a base-36
-# hash of the path. The transcript dir for a long path used to be unbindable
-# (past NAME_MAX) and is now a name claude never writes to unless this matches.
-# claude's own rule under node is the reference where node is on PATH; deriving
-# the hash in perl here would only mirror the implementation.
-my $JS_SLUG = q~const t=process.argv[1];let e=t.replace(/[^a-zA-Z0-9]/g,"-");~
-            . q~if(e.length>200){let h=0;for(let i=0;i<t.length;i++)h=(h<<5)-h+t.charCodeAt(i)|0;~
-            . q~e=e.slice(0,200)+"-"+Math.abs(h).toString(36)}process.stdout.write(e)~;
-sub node_slug {
-    my ($path) = @_;
-    return unless grep { -x "$_/node" } split /:/, $ENV{PATH};
-    open my $fh, '-|', 'node', '-e', $JS_SLUG, $path or return;
-    local $/;
-    return scalar <$fh>;
-}
-sub transcript_slug {
-    my ($r) = @_;
-    my @rw = (bwrap_binds($r->{argv}, '--bind'), bwrap_binds($r->{argv}, '--bind-try'));
-    my ($projects) = grep { $_->[1] =~ m{/\.claude/projects/} } @rw;
-    return $projects ? ($projects->[1] =~ m{/\.claude/projects/(.+)\z})[0] : undef;
-}
-subtest 'a character outside the BMP is two dashes, as in UTF-16' => sub {
-    my $r = run_aye({ repo_name => "caf\xC3\xA9-\xF0\x9F\x98\x80" });   # café-😀
-    is $r->{exit}, 0;
-    my $slug = transcript_slug($r);
-    like $slug, qr/-caf----\z/, 'é is one dash, the emoji two';
-    my $ref = node_slug("$r->{root}/caf\xC3\xA9-\xF0\x9F\x98\x80");
-    is $slug, $ref, 'matches claude\'s rule under node' if defined $ref;
-};
-subtest 'a name past 200 units is cut and hashed' => sub {
-    my $name = join('/', ('d' x 60) x 5);
-    my $r = run_aye({ repo_name => $name });
-    is $r->{exit}, 0;
-    unlike $r->{err}, qr/cannot create the session transcript dir/, 'the dir is creatable';
-    my $slug = transcript_slug($r);
-    like $slug, qr/\A.{200}-[0-9a-z]+\z/, '200 units, a dash, a base-36 hash';
-    my $ref = node_slug("$r->{root}/$name");
-    is $slug, $ref, 'matches claude\'s rule under node' if defined $ref;
-};
-
-# Each of these is loaded by a later host-side claude — as a command it runs,
-# or as text it puts in the model's context. The flat files come back read-only;
-# the content dirs are overlays whose upper layer is a tmpfs bwrap discards, so
-# a write appears to work in-session but never reaches the host.
-my @claude_dirs = qw(commands agents skills output-styles plugins hooks scripts);
-subtest 'writes to the exec-bearing ~/.claude paths cannot reach the host' => sub {
-    my $r = run_aye({ claude_dirs => [@claude_dirs] });
-    is $r->{exit}, 0;
-    my @a = @{$r->{argv}};
-    my $home = setenv_value($r->{argv}, 'HOME');
-    my %ro = map { $_->[1] => 1 } bwrap_binds($r->{argv}, '--ro-bind-try');
-    ok $ro{"$home/.claude/$_"}, "$_ is ro" for qw(
-        settings.json settings.local.json CLAUDE.md
-        mcp.json .mcp.json statusline-command.sh
-    );
-    for my $d (@claude_dirs) {
-        my ($i) = grep { $a[$_] eq '--overlay-src' && $a[$_ + 1] eq "$home/.claude/$d" }
-                  0 .. $#a - 1;
-        ok(defined $i, "$d is an overlay lower layer") or next;
-        is [@a[$i + 2 .. $i + 3]], ['--tmp-overlay', "$home/.claude/$d"],
-            "$d gets a throwaway upper at the same path";
-        ok !$ro{"$home/.claude/$d"}, "$d is not also ro-bound";
-    }
-};
-
-# --overlay-src aborts bwrap on a missing source, so absent dirs are skipped
-# host-side instead — the -try contract, minus the atomicity: the check runs at
-# launch, not mount time, and nothing deletes these dirs in between.
-subtest 'absent ~/.claude dirs produce no overlay' => sub {
-    my $r = run_aye();
-    is $r->{exit}, 0;
-    my $home = setenv_value($r->{argv}, 'HOME');
-    is scalar(grep { m{\A\Q$home\E/\.claude/} } overlay_dests($r->{argv})), 0, 'none requested';
-};
-
 # Landlock rules only ever grant — the $HOME-wide rw entry already covers the
 # dest, so an ro entry couldn't deny anything — but the lists document intent,
 # and a future reshuffle of the broad grants would inherit a stale ro entry.
 subtest 'overlay dests go in the rw Landlock list' => sub {
-    my $r = run_aye({ claude_dirs => ['skills'] });
+    my $r = run_aye({ repo_claude_dirs => ['worktrees'] });
     is $r->{exit}, 0;
-    my $dest = setenv_value($r->{argv}, 'HOME') . '/.claude/skills';
+    my ($dest) = grep { m{/repo/\.claude/worktrees\z} } overlay_dests($r->{argv});
+    ok(defined $dest, 'the worktrees dir is overlaid') or return;
     my @ro = setenv_list($r->{argv}, 'LL_RO');
     ok(scalar(@ro), 'LL_RO is present') or return;
     ok +(grep { $_ eq $dest } setenv_list($r->{argv}, 'LL_RW')), 'in LL_RW';
@@ -339,8 +175,8 @@ subtest 'a kernel without unprivileged overlayfs is refused' => sub {
 };
 
 # Lower-layer support depends on the filesystem, so the probe runs against the
-# repo and ~/.claude; a host where only those fail is told which dirs are the
-# problem instead of being blamed on the kernel.
+# repo; a host where only that fails is told which dir is the problem instead
+# of being blamed on the kernel.
 subtest 'a filesystem refused as an overlay lower gets its own message' => sub {
     my $r = run_aye({ lower_probe_status => 1 });
     is $r->{exit}, 1, 'exits 1';
@@ -363,70 +199,9 @@ subtest 'a failing bwrap --version is not mined for digits' => sub {
     like $r->{err}, qr/bwrap --version failed \(exited 3\)/, 'reports the exit instead';
 };
 
-# A bind needs its source to exist, and an OAuth login in-session writes through
-# it to the host inode — so an absent credentials file is created, not skipped.
-# Losing this silently means logging in again on every run.
-subtest 'the credentials file is created and bound rw' => sub {
-    my $r = run_aye();
-    is $r->{exit}, 0;
-    my $creds = "$r->{root}/home/.claude/.credentials.json";
-    ok -e $creds, 'created on the host when absent';
-    my @st = stat $creds;
-    is $st[7], 0, 'empty, so claude reads it back as logged out';
-    is sprintf('%04o', $st[2] & oct('7777')), '0600',
-        'and not readable by other users';
-
-    my @rw = bwrap_binds($r->{argv}, '--bind');
-    ok +(grep { $_->[0] eq $creds && $_->[1] eq $creds } @rw),
-        'bound rw at the same path';
-};
-
-# config.json is a stale copy of credentials claude no longer reads, so no run
-# has a reason to mount it.
-subtest 'config.json stays out of the session' => sub {
-    my $r = run_aye();
-    is $r->{exit}, 0;
-    my $home = setenv_value($r->{argv}, 'HOME');
-    my @mounts = grep { $_->[1] eq "$home/.claude/config.json" }
-                 map  { bwrap_binds($r->{argv}, $_) }
-                 qw(--bind --bind-try --ro-bind --ro-bind-try);
-    is scalar(@mounts), 0, 'not mounted under any flag';
-};
-
-# claude keeps its state under CLAUDE_CONFIG_DIR when that is set. Pinning
-# ~/.claude regardless would start the session with no settings and bind a
-# transcript dir claude never reads, with nothing to say so.
-subtest 'CLAUDE_CONFIG_DIR moves the claude state root' => sub {
-    my $r = run_aye({ config_dir => 'cfg' });
-    is $r->{exit}, 0;
-    my $cfg  = "$r->{root}/cfg";
-    my $home = setenv_value($r->{argv}, 'HOME');
-    is setenv_value($r->{argv}, 'CLAUDE_CONFIG_DIR'), $cfg, 'forwarded to the session';
-    my %ro = map { $_->[1] => 1 } bwrap_binds($r->{argv}, '--ro-bind-try');
-    ok $ro{"$cfg/settings.json"}, 'settings pinned from there';
-    my @rw = map { bwrap_binds($r->{argv}, $_) } qw(--bind --bind-try);
-    ok +(grep { $_->[1] eq "$cfg/.credentials.json" } @rw), 'credentials bound from there';
-    ok +(grep { $_->[1] eq "$cfg/.claude.json" } @rw), '.claude.json bound from there';
-    ok +(grep { $_->[1] =~ m{\A\Q$cfg\E/projects/.+} } @rw), 'transcript dir under it';
-    ok -e "$cfg/.credentials.json", 'credentials file created there';
-    ok !(grep { m{\A\Q$home\E/\.claude} } keys %ro, map { $_->[1] } @rw),
-        'nothing bound under ~/.claude';
-    my @a = @{$r->{argv}};
-    ok +(grep { $a[$_] eq '--tmpfs' && $a[$_ + 1] eq $cfg } 0 .. $#a - 1),
-        'backed by a tmpfs of its own, outside the $HOME one';
-};
-
-subtest 'a CLAUDE_CONFIG_DIR under $HOME needs no tmpfs of its own' => sub {
-    my $r = run_aye({ config_dir => 'home/cfg' });
-    is $r->{exit}, 0;
-    my @a = @{$r->{argv}};
-    my @tmpfs = map { $a[$_ + 1] } grep { $a[$_] eq '--tmpfs' } 0 .. $#a - 1;
-    ok !(grep { $_ eq "$r->{root}/home/cfg" } @tmpfs), 'covered by the $HOME tmpfs';
-};
-
 # The cache bind at ~/.cache comes last, so a state dir under it would be
-# covered: no host settings, and credentials and transcripts written into the
-# shared cache instead of the real state dir, with nothing to say so.
+# covered: the session's state and the token would land in the shared cache
+# instead, with nothing to say so.
 subtest 'a CLAUDE_CONFIG_DIR under ~/.cache is refused' => sub {
     my $r = run_aye({ config_dir => 'home/.cache/claude' });
     is $r->{exit}, 1;
@@ -434,20 +209,19 @@ subtest 'a CLAUDE_CONFIG_DIR under ~/.cache is refused' => sub {
     is $r->{argv}, [], 'bwrap never invoked';
 };
 
-# The state dir is created when missing; a plain file there used to warn about
-# transcripts and then die on .claude.json, two messages for one cause.
+# The state dir is created when missing; a plain file there is refused up
+# front, with one message, rather than by whatever first tries to use it.
 subtest 'a CLAUDE_CONFIG_DIR that is not a directory is refused' => sub {
     my $r = run_aye({ claude_files => ['cfg'], config_dir => 'home/.claude/cfg', config_dir_absent => 1 });
     is $r->{exit}, 1;
     like $r->{err}, qr/cfg is not a directory/, 'explains why';
-    unlike $r->{err}, qr/transcript/, 'with no transcript warning before it';
     is $r->{argv}, [], 'bwrap never invoked';
 };
 
 subtest 'a missing CLAUDE_CONFIG_DIR is created' => sub {
     my $r = run_aye({ config_dir => 'cfg', config_dir_absent => 1 });
     is $r->{exit}, 0;
-    is $r->{err}, '', 'silently';
+    unlike $r->{err}, qr/warning/, 'without complaint';
     my $cfg = setenv_value($r->{argv}, 'CLAUDE_CONFIG_DIR');
     ok -d $cfg, 'as a directory';
     is sprintf('%04o', (stat $cfg)[2] & oct('7777')), '0700', 'mode 0700';
@@ -518,16 +292,6 @@ subtest 'a symlinked project .claude is refused' => sub {
     is $r->{exit}, 1, 'exits 1';
     like $r->{err}, qr/\.claude is a symlink/, 'explains why';
     is $r->{argv}, [], 'bwrap never invoked';
-};
-
-# Overlayfs mounts directories only, so a plain file at an overlaid name can't
-# come back; it used to bind ro, so the skip is called out rather than silent.
-subtest 'a non-directory at an overlaid ~/.claude path warns' => sub {
-    my $r = run_aye({ claude_files => ['hooks'] });
-    is $r->{exit}, 0, 'still launches';
-    like $r->{err}, qr/hooks is not a directory/, 'says so';
-    my $home = setenv_value($r->{argv}, 'HOME');
-    ok !(grep { $_ eq "$home/.claude/hooks" } overlay_dests($r->{argv})), 'and no overlay for it';
 };
 
 # The ~/.claude guards mount after the extra binds, so a bind under ~/.claude

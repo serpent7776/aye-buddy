@@ -20,7 +20,7 @@ subtest '--keep-env carries the var through' => sub {
     my $r = run_aye('--keep-env', 'AYE_TEST_VAR');
     is $r->{exit}, 0;
     is setenv_value($r->{argv}, 'AYE_TEST_VAR'), 'kept', 'with its host value';
-    is $r->{err}, '', 'quietly';
+    unlike $r->{err}, qr/warning/, 'quietly';
 };
 
 subtest '--keep-env=NAME form is accepted' => sub {
