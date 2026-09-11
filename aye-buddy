@@ -979,9 +979,8 @@ sub launch_unfiltered {
         $seccomp_fh = eval { arm_seccomp(\@args, $seccomp_blob) }
             or fail($@ =~ s/\n\z//r);
     }
-    my $sandbox_pid = spawn(sub {
-        exec { 'bwrap' } 'bwrap', @args or print STDERR "aye-buddy: exec bwrap: $!\n";
-    }) // fail("fork sandbox: $!");
+    my $sandbox_pid = spawn(sub { exec { 'bwrap' } 'bwrap', @args })
+        // fail("fork sandbox: $!");
     $SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
     my $pid;
     do { $pid = waitpid($sandbox_pid, 0) } while $pid == -1 && $!{EINTR};
@@ -1004,11 +1003,11 @@ sub with_restarts {
     }
 }
 
-# fork and run $child in the child, which is to exec; if it returns the child
-# exits 127. INT/TERM/HUP are held across the fork until the child owns its
-# handlers ($child_sigs, DEFAULT otherwise), so it never runs the parent's
-# forwarding handlers. EAGAIN is retried briefly. Returns the pid, or undef
-# with $! set.
+# fork and run $child in the child, which is to exec; if it comes back, by a
+# failed exec or a die, the child says why and exits 127. INT/TERM/HUP are
+# held across the fork until the child owns its handlers ($child_sigs, DEFAULT
+# otherwise), so it never runs the parent's forwarding handlers. EAGAIN is
+# retried briefly. Returns the pid, or undef with $! set.
 sub spawn {
     my ($child, %child_sigs) = @_;
     my $held = POSIX::SigSet->new(POSIX::SIGINT, POSIX::SIGTERM, POSIX::SIGHUP);
@@ -1022,7 +1021,10 @@ sub spawn {
         if (defined $pid && $pid == 0) {
             $SIG{$_} = $child_sigs{$_} // 'DEFAULT' for qw(INT TERM HUP);
             POSIX::sigprocmask(POSIX::SIG_SETMASK, $mask);    # exec keeps the mask
-            $child->();
+            # A die is caught here so the child can't unwind into the parent's
+            # code, whose END blocks and cleanups would then run in the child.
+            my $ok = eval { $child->(); 1 };
+            print STDERR 'aye-buddy: ', ($ok ? "exec: $!\n" : $@);
             POSIX::_exit(127);
         }
         POSIX::sigprocmask(POSIX::SIG_SETMASK, $mask);
@@ -1038,7 +1040,7 @@ sub spawn_proxy {
         open(STDOUT, '>>', $log);
         open(STDERR, '>>', $log);    # best-effort; keep denials off the TUI
         # Perl marks the fd close-on-exec; clear that so the proxy inherits it.
-        fcntl($sock, F_SETFD, 0) or return;
+        fcntl($sock, F_SETFD, 0) or die "fcntl: $!\n";
         $ENV{AYE_PROXY_ALLOW} = join("\n", @allow_hosts);
         exec { $^X } $^X, $proxy_helper, '--fd', fileno($sock),
              ($allow_reserved ? '--allow-reserved' : ());
