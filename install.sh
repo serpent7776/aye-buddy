@@ -1,8 +1,29 @@
 #!/bin/sh
 # Install aye-buddy onto $PATH and, after prompting, add a claude() shell
 # function that forwards to it.
+#
+# usage: install.sh [-y|-n]
+#   -y  assume yes to every prompt (never asks, works without a tty)
+#   -n  assume no to every prompt
 
 set -eu
+
+assume=""
+for arg in "$@"; do
+    case "$arg" in
+        -y|-n)
+            if [ -n "$assume" ] && [ "$assume" != "$arg" ]; then
+                echo "install.sh: -y and -n are mutually exclusive" >&2
+                exit 2
+            fi
+            assume=$arg
+            ;;
+        *)
+            echo "usage: install.sh [-y|-n]" >&2
+            exit 2
+            ;;
+    esac
+done
 
 SCRIPT=aye-buddy
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -48,13 +69,18 @@ case ":$PATH:" in
     *) printf 'warning: %s is not in PATH — add it to your shell rc\n' "$BINDIR" ;;
 esac
 
-if [ ! -t 0 ]; then
-    echo "skipping claude shell function (stdin is not a tty)"
-    exit 0
-fi
-
-printf "Install a 'claude' shell function that forwards to aye-buddy? [y/N] "
-read -r ans
+case "$assume" in
+    -y) ans=y ;;
+    -n) ans=n ;;
+    *)
+        if [ ! -t 0 ]; then
+            echo "skipping claude shell function (stdin is not a tty)"
+            exit 0
+        fi
+        printf "Install a 'claude' shell function that forwards to aye-buddy? [y/N] "
+        read -r ans
+        ;;
+esac
 case "$ans" in
     y|Y|yes|YES) ;;
     *) echo "skipping shell function install"; exit 0 ;;
