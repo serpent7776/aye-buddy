@@ -827,8 +827,14 @@ push @args,
     '--',
     @payload;
 
+# Exit as a shell reports a child's status: its code, or 128 plus the signal.
+sub exit_with {
+    my ($status) = @_;
+    exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+}
+
 # Unfiltered path: arm the seccomp blob (splices its fd into @args for the
-# placeholder) and exec bwrap directly. Never returns.
+# placeholder) and run bwrap as a child, waited on here.
 sub launch_unfiltered {
     # $seccomp_fh must stay in scope until exec so the kernel doesn't close the
     # fd out from under bwrap.
@@ -837,8 +843,17 @@ sub launch_unfiltered {
         $seccomp_fh = eval { arm_seccomp(\@args, $seccomp_blob) }
             or fail($@ =~ s/\n\z//r);
     }
-    exec { 'bwrap' } 'bwrap', @args
-        or fail("exec bwrap: $!");
+    my $sandbox_pid = spawn() // fail("fork sandbox: $!");
+    if ($sandbox_pid == 0) {
+        exec { 'bwrap' } 'bwrap', @args
+            or print STDERR "aye-buddy: exec bwrap: $!\n";
+        POSIX::_exit(127);
+    }
+    $SIG{$_} = sub { kill $_[0], $sandbox_pid } for qw(INT TERM HUP);
+    my $pid;
+    do { $pid = waitpid($sandbox_pid, 0) } while $pid == -1 && $!{EINTR};
+    fail("waitpid: $!") if $pid == -1;
+    exit_with($?);
 }
 
 # Run $try until it returns a defined value, restarting it after each bare
@@ -1015,7 +1030,7 @@ sub launch_filtered {
     } elsif (!$fork_failed) {
         unless ($ENV{AYE_BUDDY_DEBUG}) { unlink $proxy_log; rmdir $logdir }
     }
-    exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+    exit_with($status);
 }
 
 if ($net_filter) {
