@@ -47,8 +47,34 @@ sub fresh_install {
     my $home = "$root/home";
     mkdir $home or die "mkdir $home: $!";
     my ($out, $exit) = run_env($root, $home, $opt{on_path},
-        'sh', $INSTALL, @{ $opt{args} // [] });
+        'sh', $opt{install} // $INSTALL, @{ $opt{args} // [] });
     return { root => $root, home => $home, out => $out, exit => $exit };
+}
+
+# The version line the installed aye-buddy prints, e.g. "aye-buddy 0.1.0 (abc1234)".
+sub installed_version {
+    my ($r) = @_;
+    my ($out) = run_env($r->{root}, $r->{home}, undef,
+        "$r->{home}/.local/bin/aye-buddy", '--version');
+    chomp $out;
+    return $out;
+}
+
+# A copy of the installable files in a fresh dir, with aye-buddy passed
+# through $edit (a sub over its text) — stands in for a source tree that is
+# not a git checkout, such as an unpacked release tarball.
+sub source_tree {
+    my ($edit) = @_;
+    my $dir = tempdir(CLEANUP => 1);
+    for my $f (@exec, @data, 'install.sh') {
+        open my $in, '<', "$ROOT/$f" or die "read $f: $!";
+        my $text = do { local $/; <$in> };
+        $text = $edit->($text) if $f eq 'aye-buddy';
+        open my $o, '>', "$dir/$f" or die "write $f: $!";
+        print $o $text;
+        close $o or die $!;
+    }
+    return $dir;
 }
 
 # The rc targets install.sh may write the shell function into; which one it
@@ -79,6 +105,40 @@ subtest 'install populates libexec and links onto PATH' => sub {
     my ($out, $exit) = run_env($r->{root}, $r->{home}, undef, $link, '--version');
     is $exit, 0, 'installed aye-buddy --version exits 0';
     like $out, qr/^aye-buddy [0-9]+\.[0-9]+/, 'prints its version';
+};
+
+# The source keeps a $Format:%h$ placeholder for git archive to expand; from a
+# checkout install.sh fills it itself when git is at hand.
+subtest 'install from a checkout bakes in the commit hash' => sub {
+    my $hash = `git -C "$ROOT" rev-parse --short HEAD 2>/dev/null`;
+    chomp $hash;
+    skip_all 'not a git checkout, or no git' unless $? == 0 && $hash =~ /^[0-9a-f]+$/;
+    # This checkout could itself be an unpacked archive, already expanded.
+    open my $fh, '<', "$ROOT/aye-buddy" or die $!;
+    my $src = do { local $/; <$fh> };
+    skip_all 'placeholder already expanded in this tree' unless $src =~ /Format:%h/;
+    my $r = fresh_install();
+    is $r->{exit}, 0, 'install.sh succeeds';
+    like installed_version($r), qr/^aye-buddy [0-9.]+ \(\Q$hash\E\)$/, 'version carries HEAD';
+};
+
+subtest 'install without git prints the bare version' => sub {
+    # A git that always fails stands in for one that is missing.
+    my $dir = tempdir(CLEANUP => 1);
+    open my $fh, '>', "$dir/git" or die $!;
+    print $fh "#!/bin/sh\nexit 1\n";
+    close $fh;
+    chmod 0755, "$dir/git" or die $!;
+    my $r = fresh_install(on_path => $dir);
+    is $r->{exit}, 0, 'install.sh still succeeds';
+    like installed_version($r), qr/^aye-buddy [0-9.]+$/, 'no hash, no noise';
+};
+
+subtest 'an already expanded placeholder is installed as is' => sub {
+    my $src = source_tree(sub { my $t = shift; $t =~ s/\$Format:%h\$/deadbee/ or die 'no placeholder'; $t });
+    my $r = fresh_install(install => "$src/install.sh");
+    is $r->{exit}, 0, 'install.sh succeeds';
+    like installed_version($r), qr/^aye-buddy [0-9.]+ \(deadbee\)$/, 'the archive hash survives';
 };
 
 subtest 'install leaves the host untouched (no rc edits)' => sub {
