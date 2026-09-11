@@ -487,6 +487,76 @@ for my $bind (@extra_rw, @extra_ro) {
     }
 }
 
+# The project .claude and the worktree dirs are checked and created here,
+# before any host-side dir is created, so a refusal leaves nothing behind.
+fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
+   . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
+unless (-e $proj_claude) {
+    mkdir $proj_claude or fail("cannot create " . printable($proj_claude) . ": $!");
+}
+fail(printable($proj_claude) . " is not a directory\n"
+   . "  Make it a real directory to sandbox this project.") unless -d $proj_claude;
+my @worktree_dirs = ("$proj_claude/worktrees", "$project_dir/.git/worktrees");
+for my $wt (@worktree_dirs) {
+    fail(printable($wt) . " is a symlink; overlaying it would expose its target") if -l $wt;
+    unless (-e $wt) {
+        mkdir $wt or fail("cannot create " . printable($wt) . ": $!");
+    }
+}
+
+# uname -m -> audit arch magic, for the arches gen-seccomp.c builds into the blob.
+my %audit_arch = (
+    x86_64  => 0xC000003E,                                      # x32 reports x86_64 too
+    i386 => 0x40000003, i486 => 0x40000003,
+    i586 => 0x40000003, i686 => 0x40000003,
+    aarch64 => 0xC00000B7,
+    armv6l  => 0x40000028, armv7l => 0x40000028, armv8l => 0x40000028,
+    ppc64le => 0xC0000015,
+    riscv64 => 0xC00000F3,
+    loongarch64 => 0xC0000102,
+);
+
+# True only if the blob has a real dispatch block for this host's arch. A seccomp
+# filter matches seccomp_data.arch and falls through to its default action (ALLOW)
+# for any arch it wasn't built for — so on an uncovered arch the blob is a silent
+# no-op. We read the blob rather than trust a static list, so this can't drift out
+# of sync with gen-seccomp.c and reopen that silent hole.
+sub seccomp_covers_host {
+    my ($blob) = @_;
+    my $machine = (POSIX::uname())[4];
+    my $magic = $audit_arch{$machine};
+    return (0, $machine) unless defined $magic;
+    open my $fh, '<:raw', $blob or return (0, $machine);
+    my $prog = do { local $/; <$fh> };
+    # sock_filter = { u16 code; u8 jt; u8 jf; u32 k }, little-endian (generated on
+    # x86_64; every covered arch is LE). The preamble BPF_JEQs seccomp_data.arch
+    # against each covered arch's magic; a BPF_JEQ carrying ours means a real
+    # dispatch block exists. The magics are distinctive enough that no syscall-nr
+    # or clone-flag comparison collides with them.
+    for (my $i = 0; $i + 8 <= length $prog; $i += 8) {
+        my ($code, $k) = unpack('v x2 V', substr($prog, $i, 8));  # code, k
+        return (1, $machine) if $code == 0x15 && $k == $magic;    # BPF_JMP|JEQ|K
+    }
+    return (0, $machine);
+}
+
+# Whether the seccomp denylist applies. bwrap installs it after building the
+# sandbox (so it doesn't block bwrap's own unshare/mount) and reads it from an
+# inherited fd, passed as a placeholder in the argv below.
+my $use_seccomp = 0;
+if (-r $seccomp_blob) {
+    # Fail closed: refuse to launch rather than run with a seccomp layer that this
+    # arch would silently ignore. Regenerate the blob (make seccomp) for the arch.
+    my ($covered, $machine) = seccomp_covers_host($seccomp_blob);
+    $covered or fail("seccomp blob doesn't cover this machine's architecture" .
+                     " ($machine), so the syscall filter can't be enforced here.\n" .
+                     "  please open an issue in the aye-buddy repo reporting the" .
+                     " '$machine' architecture so support can be added.");
+    $use_seccomp = 1;
+} else {
+    warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
+}
+
 # claude names the dir after the cwd: every UTF-16 code unit outside [A-Za-z0-9]
 # becomes a dash, and a name past 200 units is cut there and suffixed with a
 # base-36 hash of the path. Kept in step with claude by hand.
@@ -590,21 +660,8 @@ bind_ro($_) for @extra_ro;
 try_ro("$project_dir/.git/hooks");
 try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
-fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
-   . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
-unless (-e $proj_claude) {
-    mkdir $proj_claude or fail("cannot create " . printable($proj_claude) . ": $!");
-}
-fail(printable($proj_claude) . " is not a directory\n"
-   . "  Make it a real directory to sandbox this project.") unless -d $proj_claude;
 bind_ro($proj_claude);
-for my $wt ("$proj_claude/worktrees", "$project_dir/.git/worktrees") {
-    fail(printable($wt) . " is a symlink; overlaying it would expose its target") if -l $wt;
-    unless (-e $wt) {
-        mkdir $wt or fail("cannot create " . printable($wt) . ": $!");
-    }
-    try_tmp_overlay($wt);
-}
+try_tmp_overlay($_) for @worktree_dirs;
 # The state dir is deliberately not bound: it stays an empty dir in the tmpfs
 # $HOME, or a tmpfs of its own when CLAUDE_CONFIG_DIR puts it elsewhere.
 mount_rw('--tmpfs', $claude_dir) unless under($claude_dir, $home);
@@ -714,60 +771,8 @@ if ($use_landlock) {
         '--setenv', 'LL_RO', join("\n", @ll_ro);
 }
 
-# uname -m -> audit arch magic, for the arches gen-seccomp.c builds into the blob.
-my %audit_arch = (
-    x86_64  => 0xC000003E,                                      # x32 reports x86_64 too
-    i386 => 0x40000003, i486 => 0x40000003,
-    i586 => 0x40000003, i686 => 0x40000003,
-    aarch64 => 0xC00000B7,
-    armv6l  => 0x40000028, armv7l => 0x40000028, armv8l => 0x40000028,
-    ppc64le => 0xC0000015,
-    riscv64 => 0xC00000F3,
-    loongarch64 => 0xC0000102,
-);
-
-# True only if the blob has a real dispatch block for this host's arch. A seccomp
-# filter matches seccomp_data.arch and falls through to its default action (ALLOW)
-# for any arch it wasn't built for — so on an uncovered arch the blob is a silent
-# no-op. We read the blob rather than trust a static list, so this can't drift out
-# of sync with gen-seccomp.c and reopen that silent hole.
-sub seccomp_covers_host {
-    my ($blob) = @_;
-    my $machine = (POSIX::uname())[4];
-    my $magic = $audit_arch{$machine};
-    return (0, $machine) unless defined $magic;
-    open my $fh, '<:raw', $blob or return (0, $machine);
-    my $prog = do { local $/; <$fh> };
-    # sock_filter = { u16 code; u8 jt; u8 jf; u32 k }, little-endian (generated on
-    # x86_64; every covered arch is LE). The preamble BPF_JEQs seccomp_data.arch
-    # against each covered arch's magic; a BPF_JEQ carrying ours means a real
-    # dispatch block exists. The magics are distinctive enough that no syscall-nr
-    # or clone-flag comparison collides with them.
-    for (my $i = 0; $i + 8 <= length $prog; $i += 8) {
-        my ($code, $k) = unpack('v x2 V', substr($prog, $i, 8));  # code, k
-        return (1, $machine) if $code == 0x15 && $k == $magic;    # BPF_JMP|JEQ|K
-    }
-    return (0, $machine);
-}
-
-# Apply the seccomp denylist to the payload. bwrap installs it after building the
-# sandbox (so it doesn't block bwrap's own unshare/mount) and reads it from an
-# inherited fd. We pass a placeholder for the fd number now; whichever process
-# execs bwrap arms the blob and rewrites the token to its own fd.
-my $use_seccomp = 0;
-if (-r $seccomp_blob) {
-    # Fail closed: refuse to launch rather than run with a seccomp layer that this
-    # arch would silently ignore. Regenerate the blob (make seccomp) for the arch.
-    my ($covered, $machine) = seccomp_covers_host($seccomp_blob);
-    $covered or fail("seccomp blob doesn't cover this machine's architecture" .
-                     " ($machine), so the syscall filter can't be enforced here.\n" .
-                     "  please open an issue in the aye-buddy repo reporting the" .
-                     " '$machine' architecture so support can be added.");
-    $use_seccomp = 1;
-    push @args, '--seccomp', SECCOMP_FD_TOKEN;
-} else {
-    warning("seccomp blob not found ($seccomp_blob); seccomp layer off");
-}
+# The blob is armed by whichever process execs bwrap; see launch_* below.
+push @args, '--seccomp', SECCOMP_FD_TOKEN if $use_seccomp;
 
 # Payload: run the agent directly, or wrap it in aye-landlock so Landlock is applied
 # to the final sandbox view and inherited down into the agent and its children.
