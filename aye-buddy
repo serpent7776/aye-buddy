@@ -138,8 +138,9 @@ options:
                             directly, around the proxy
   --allow-reserved          let an allowlisted name resolve to a loopback or
                             private address (for split-horizon DNS)
-  --allow-ssh               forward the host SSH agent socket into the session;
-                            the agent then signs for any host, not just git
+  --allow-ssh               forward the host SSH agent socket into the session,
+                            with ~/.ssh/config and known_hosts read-only; the
+                            agent then signs for any host, not just git
   --allow-bwrap             let the session run bwrap itself (nested
                             sandboxing); reduces isolation
   --help                    show this help and exit
@@ -182,9 +183,10 @@ USAGE
 #     toolchain needs; each one is also a way for host secrets to reach the
 #     session, hence one name at a time rather than a pattern. Names aye-buddy
 #     manages itself are refused instead of silently losing to ours.
-#   --allow-ssh forwards $SSH_AUTH_SOCK into the sandbox. Opt-in because an agent
-#     can't scope a signature to one destination: the session can have the host
-#     agent authenticate to anything it can reach, for the session's lifetime.
+#   --allow-ssh forwards $SSH_AUTH_SOCK into the sandbox, and with it ~/.ssh/config
+#     and known_hosts, ro. Opt-in because an agent can't scope a signature to one
+#     destination: the session can have the host agent authenticate to anything
+#     it can reach, for the session's lifetime.
 #   --reseed replaces the host-config part of this project's sandbox state with
 #     a fresh copy from the host. The copy is made once otherwise, so host-side
 #     edits don't reach a project's sandbox until asked for.

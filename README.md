@@ -110,8 +110,9 @@ aye-buddy's own for this project, mounted at `~/.claude` (see
 mounted over it; and a cache directory of aye-buddy's own (see
 [Caches](#caches)).
 
-**Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git and
-SSH *config* (`~/.gitconfig`, `~/.ssh/config`, `~/.ssh/known_hosts`); the
+**Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git
+*config* (`~/.gitconfig`, `~/.config/git`) and, only with `--allow-ssh`,
+your SSH *config* (`~/.ssh/config`, `~/.ssh/known_hosts`); the
 project's `.git/hooks`, `.git/config`, `.git/modules` and its `.claude/`
 — a later host-side `claude` run in this repo acts on that dir, so a
 session can't plant hooks, skills or settings there (it's created empty
@@ -172,7 +173,8 @@ variables, and — only with `--allow-ssh` — your SSH agent socket. Every
 other env var, API tokens and cloud credentials included, is cleared so it
 can't leak in; name one with `--keep-env` to carry it through.
 
-**Not visible at all:** `~/.ssh` private keys, `~/.aws`, `~/.config/gcloud`,
+**Not visible at all:** `~/.ssh` (private keys always; the config too
+without `--allow-ssh`), `~/.aws`, `~/.config/gcloud`,
 `~/.kube`, `~/.netrc`, browser profiles, password stores, other projects,
 other users' homes, `/root`, `/var`, and your real caches (`~/.cache`,
 `~/.cargo`, `~/.npm`). `$HOME` starts as an empty tmpfs; only the paths above
@@ -254,8 +256,9 @@ dual-stacked host.
   host that shares infrastructure with an allowed one.
 - **SSH remotes aren't proxied automatically.** `ssh` doesn't honour
   `HTTPS_PROXY` — prefer HTTPS remotes, or allowlist the host and route
-  `ssh` through the proxy with a `ProxyCommand` (and see
-  [`--allow-ssh`](#--allow-ssh-agent-forwarding) for the key half).
+  `ssh` through the proxy with a `ProxyCommand` in `~/.ssh/config` (which
+  needs [`--allow-ssh`](#--allow-ssh-agent-forwarding): that flag mounts
+  the config and forwards the key).
 
 `--no-net-filter` turns all of this off and restores full network access
 — useful for debugging or a workload the allowlist can't express.
@@ -315,7 +318,11 @@ namespaces (the default wherever `bwrap` already works).
 Off by default: the session gets no `SSH_AUTH_SOCK`, so `ssh` and
 git-over-SSH inside it have no key to offer. `--allow-ssh` binds the host
 agent's socket in at `/run/ssh-agent` (the private keys themselves stay
-invisible, as with any agent forward) and prints a warning.
+invisible, as with any agent forward), mounts `~/.ssh/config` and
+`~/.ssh/known_hosts` read-only so `ssh` finds your host aliases and known
+keys, and prints a warning. Without the flag none of `~/.ssh` is visible:
+with no agent to use it, the config would only tell the session which
+hosts, users and key files you have.
 
 The warning is there because an agent signature can't be scoped to a
 destination: for as long as the session runs it can ask your agent to
