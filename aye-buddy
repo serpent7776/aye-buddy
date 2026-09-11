@@ -53,14 +53,13 @@ sub version_at_least {
 sub require_overlay_support {
     my @dirs = @_;
     my $probe = sub {
-        my $pid = fork // fail("fork: $!");
-        if ($pid == 0) {
+        my @opts = @_;
+        my $pid = spawn(sub {
             open(STDIN,  '<', '/dev/null');
             open(STDOUT, '>', '/dev/null');
             open(STDERR, '>', '/dev/null');
-            exec { 'bwrap' } 'bwrap', '--ro-bind', '/', '/', @_, 'true'
-                or POSIX::_exit(127);
-        }
+            exec { 'bwrap' } 'bwrap', '--ro-bind', '/', '/', @opts, 'true';
+        }) // fail("fork: $!");
         waitpid($pid, 0);
         return $? == 0;
     };
