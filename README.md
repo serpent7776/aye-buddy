@@ -68,6 +68,12 @@ the function without asking (no tty needed), `./install.sh -n` leaves it out.
 `make uninstall` reverses it (for bash/zsh you remove the shell-function
 block by hand — the installer prints where).
 
+The installed `aye-buddy --version` names the commit it came from. Release
+archives from GitHub carry the hash already (via `git archive`'s
+`export-subst`); installing from a checkout takes it from `git` when that is
+on `PATH`. Neither git nor anything else is required — without it the bare
+version prints.
+
 ## Usage
 
 Run `aye-buddy` (or `claude`, with the shell function) from inside a
@@ -96,7 +102,7 @@ than being silently forwarded.
 | `--allow-ssh` | Forward your SSH agent socket into the session. Off by default — see below. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
 | `--help` | Print the flag list and exit. |
-| `--version` | Print the version and exit. |
+| `--version` | Print the version and exit, with the short commit hash when known (`aye-buddy 0.1.0 (abc1234)`). |
 
 `--help` and `--version` are answered before anything is set up, so they work
 outside a repository. To reach claude's own `--help`, put it after the

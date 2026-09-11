@@ -46,6 +46,14 @@ done
 LIBEXEC=$HOME/.local/libexec/aye-buddy
 install -d "$LIBEXEC"
 
+# A checkout still has the $Format:%h$ placeholder that `git archive` would
+# have expanded (GitHub's tgz/zip arrive filled in). Fill it from git when it
+# is there; without git the installed copy just prints the bare version.
+hash=""
+if grep -q 'Format:%h' "$SRC_DIR/$SCRIPT"; then
+    hash=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null) || hash=""
+fi
+
 for f in "$SCRIPT" AyeSeccomp.pm aye-landlock aye-proxy aye-netns-seal filter.bpf filter-nested.bpf; do
     if [ ! -f "$SRC_DIR/$f" ]; then
         msg="install.sh: required $SRC_DIR/$f not found"
@@ -57,7 +65,13 @@ for f in "$SCRIPT" AyeSeccomp.pm aye-landlock aye-proxy aye-netns-seal filter.bp
         *.bpf|*.pm) mode=0644 ;;
         *)          mode=0755 ;;
     esac
-    install -m "$mode" "$SRC_DIR/$f" "$LIBEXEC/$f"
+    if [ "$f" = "$SCRIPT" ] && [ -n "$hash" ]; then
+        sed 's/\$Format:%h\$/'"$hash"'/' "$SRC_DIR/$f" > "$LIBEXEC/$f.tmp"
+        install -m "$mode" "$LIBEXEC/$f.tmp" "$LIBEXEC/$f"
+        rm -f "$LIBEXEC/$f.tmp"
+    else
+        install -m "$mode" "$SRC_DIR/$f" "$LIBEXEC/$f"
+    fi
     printf 'installed %s -> %s\n' "$f" "$LIBEXEC/$f"
 done
 
