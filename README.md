@@ -62,6 +62,9 @@ the script onto your `$PATH`, then offers to add a `claude` shell function
 that forwards to it (so typing `claude` runs the sandboxed version;
 `command claude` still reaches the real binary).
 
+To skip the question, run the installer directly: `./install.sh -y` adds
+the function without asking (no tty needed), `./install.sh -n` leaves it out.
+
 `make uninstall` reverses it (for bash/zsh you remove the shell-function
 block by hand — the installer prints where).
 

@@ -40,15 +40,20 @@ sub run_env {
     return (scalar <$fh>, $exit);
 }
 
-# Fresh throwaway HOME + one install.sh run into it.
+# Fresh throwaway HOME + one install.sh run into it. Extra args go to install.sh.
 sub fresh_install {
     my (%opt) = @_;
     my $root = tempdir(CLEANUP => 1);
     my $home = "$root/home";
     mkdir $home or die "mkdir $home: $!";
-    my ($out, $exit) = run_env($root, $home, $opt{on_path}, 'sh', $INSTALL);
+    my ($out, $exit) = run_env($root, $home, $opt{on_path},
+        'sh', $INSTALL, @{ $opt{args} // [] });
     return { root => $root, home => $home, out => $out, exit => $exit };
 }
+
+# The rc targets install.sh may write the shell function into; which one it
+# picks depends on the invoking user's login shell.
+my @rc = qw(.bashrc .zshrc .profile .config/fish/functions/claude.fish);
 
 subtest 'install populates libexec and links onto PATH' => sub {
     my $r = fresh_install();
@@ -80,8 +85,34 @@ subtest 'install leaves the host untouched (no rc edits)' => sub {
     my $r = fresh_install();
     like $r->{out}, qr/skipping claude shell function/, 'shell-function step skipped';
     # None of the rc targets install.sh could otherwise touch were created.
-    ok !-e "$r->{home}/$_", "no $_ written"
-        for qw(.bashrc .zshrc .profile .config/fish/functions/claude.fish);
+    ok !-e "$r->{home}/$_", "no $_ written" for @rc;
+};
+
+subtest '-y installs the shell function without a tty' => sub {
+    my $r = fresh_install(args => ['-y']);
+    is $r->{exit}, 0, 'install.sh -y succeeds';
+    unlike $r->{out}, qr/skipping/, 'nothing skipped';
+    my @written = grep { -f "$r->{home}/$_" } @rc;
+    is scalar @written, 1, 'exactly one rc target written' or diag "@written";
+    open my $fh, '<', "$r->{home}/$written[0]" or die $!;
+    my $rc = do { local $/; <$fh> };
+    like $rc, qr/aye-buddy --agent claude/, 'rc forwards claude to aye-buddy';
+};
+
+subtest '-n skips the shell function without asking' => sub {
+    my $r = fresh_install(args => ['-n']);
+    is $r->{exit}, 0, 'install.sh -n succeeds';
+    like $r->{out}, qr/skipping shell function install/, 'shell-function step skipped';
+    unlike $r->{out}, qr/not a tty/, 'never reached the tty check';
+    ok !-e "$r->{home}/$_", "no $_ written" for @rc;
+};
+
+subtest 'bad or conflicting flags are a usage error' => sub {
+    for my $args (['-x'], ['-y', '-n'], ['-n', '-y']) {
+        my $r = fresh_install(args => $args);
+        is $r->{exit}, 2, "install.sh @$args exits 2";
+        ok !-e "$r->{home}/.local", "install.sh @$args installs nothing";
+    }
 };
 
 subtest 'install reuses a bin dir already on PATH' => sub {
