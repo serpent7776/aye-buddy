@@ -833,17 +833,17 @@ bind_rw($creds);
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");
-try_ro("$home/.ssh/config");
-try_ro("$home/.ssh/known_hosts");
 
 # Bind the helper at $landlock_dest for the in-sandbox `perl` to read. RO — never written.
 if ($use_landlock) {
     bind_ro($landlock, $landlock_dest);
 }
 
-# Agent forwarding, opt-in. Fixed path inside the sandbox so the env var doesn't
-# leak the host-side socket path.
+# SSH agent forwarding, opt-in. Fixed path inside the sandbox so the env var
+# doesn't leak the host-side socket path. The ssh config comes along with it.
 if ($allow_ssh) {
+    try_ro("$home/.ssh/config");
+    try_ro("$home/.ssh/known_hosts");
     my $ssh_sock = $ENV{SSH_AUTH_SOCK};
     if (defined $ssh_sock && length $ssh_sock && -S $ssh_sock) {
         warning("--allow-ssh: the session can have your SSH agent authenticate "
