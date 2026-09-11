@@ -102,7 +102,7 @@ than being silently forwarded.
 | `--allow-ssh` | Forward your SSH agent socket into the session. Off by default — see below. |
 | `--allow-bwrap` | Let the session run `bwrap` itself (nested sandboxing). Reduces isolation — see below. |
 | `--help` | Print the flag list and exit. |
-| `--version` | Print the version and exit, with the short commit hash when known (`aye-buddy 0.1.0 (abc1234)`). |
+| `--version` | Print the version and exit, with the short commit hash when known (`aye-buddy 0.1.0-abc1234`). |
 
 `--help` and `--version` are answered before anything is set up, so they work
 outside a repository. To reach claude's own `--help`, put it after the
