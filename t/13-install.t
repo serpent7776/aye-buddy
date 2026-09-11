@@ -119,7 +119,7 @@ subtest 'install from a checkout bakes in the commit hash' => sub {
     skip_all 'placeholder already expanded in this tree' unless $src =~ /Format:%h/;
     my $r = fresh_install();
     is $r->{exit}, 0, 'install.sh succeeds';
-    like installed_version($r), qr/^aye-buddy [0-9.]+ \(\Q$hash\E\)$/, 'version carries HEAD';
+    like installed_version($r), qr/^aye-buddy [0-9.]+-\Q$hash\E$/, 'version carries HEAD';
 };
 
 subtest 'install without git prints the bare version' => sub {
@@ -138,7 +138,7 @@ subtest 'an already expanded placeholder is installed as is' => sub {
     my $src = source_tree(sub { my $t = shift; $t =~ s/\$Format:%h\$/deadbee/ or die 'no placeholder'; $t });
     my $r = fresh_install(install => "$src/install.sh");
     is $r->{exit}, 0, 'install.sh succeeds';
-    like installed_version($r), qr/^aye-buddy [0-9.]+ \(deadbee\)$/, 'the archive hash survives';
+    like installed_version($r), qr/^aye-buddy [0-9.]+-deadbee$/, 'the archive hash survives';
 };
 
 subtest 'install leaves the host untouched (no rc edits)' => sub {
