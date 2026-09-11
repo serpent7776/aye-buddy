@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# overlay-check.sh — verify the .claude overlays on a real machine: writes a
-# session makes under the project's .claude/worktrees, .git/worktrees and
-# ~/.claude/{plugins,hooks,scripts,...} land in a throwaway upper and never
-# reach the host, while the project .claude itself is read-only. The unit tests
-# only see the bwrap argv aye-buddy builds; this runs against the real mounts.
+# overlay-check.sh — verify the worktree overlays on a real machine: writes a
+# session makes under the project's .claude/worktrees and .git/worktrees land
+# in a throwaway upper and never reach the host, while the project .claude
+# itself is read-only. The unit tests only see the bwrap argv aye-buddy builds;
+# this runs against the real mounts.
 #
 # NOT run by `make test`: it needs a live session, and the check is stateful.
 #
@@ -13,9 +13,8 @@
 #   1. Start a session for this purpose alone, in the project you want to test,
 #      and FIRST THING run:   ! t/manual/overlay-check.sh session
 #      It plants a marker in every overlay, copies up and whites out an
-#      existing file where one is there (a touch, and a delete-then-recreate,
-#      so the session's own hooks and status line keep working), and does a
-#      real `git worktree add`. What it touched goes into a manifest under the
+#      existing file where one is there (a touch, and a delete-then-recreate),
+#      and does a real `git worktree add`. What it touched goes into a manifest under the
 #      persistent cache dir. Then exit the session — nothing else it does
 #      matters, and a second run in the same session would record the upper's
 #      copies and misreport.
@@ -61,14 +60,10 @@ session)
         fail "project .claude is writable"; rm -f "$project/.claude/$marker"
     else pass "project .claude is read-only"; fi
 
-    for d in "$project/.claude/worktrees" "$project/.git/worktrees" \
-             "$HOME"/.claude/*/; do
-        d=${d%/}
+    for d in "$project/.claude/worktrees" "$project/.git/worktrees"; do
         [ -d "$d" ] || continue
         t=$(fstype "$d")
-        # Only the overlaid dirs are interesting; ~/.claude also holds plain
-        # tmpfs dirs claude creates at startup.
-        [ "$t" = overlayfs ] || continue
+        [ "$t" = overlayfs ] || { fail "$d is $t, not overlayfs"; continue; }
         if [ -e "$d/$marker" ]; then
             fail "$d/$marker already present at session start; leaked from an earlier run?"
             continue
@@ -134,7 +129,7 @@ host)
     fi
     overlaid() {
         case $1 in
-        "$project/.claude/worktrees/"*|"$project/.git/worktrees/"*|"$HOME/.claude/"*) return 0 ;;
+        "$project/.claude/worktrees/"*|"$project/.git/worktrees/"*) return 0 ;;
         esac
         return 1
     }

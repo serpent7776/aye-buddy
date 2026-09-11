@@ -15,9 +15,9 @@ tells it to exfiltrate them.
 
 `aye-buddy` wraps `claude` so that:
 
-- **Only the current project and a few Claude config paths are visible.**
-  Everything else under `$HOME` — and most of the system — simply isn't
-  there.
+- **Only the current project and a Claude state dir of its own are
+  visible.** Everything else under `$HOME` — and most of the system —
+  simply isn't there.
 - **Network egress is filtered.** The session reaches the
   network only through a bundled proxy that allows a small list of hosts
   (Claude API, common package registries, git over HTTPS). Everything else
@@ -33,11 +33,12 @@ The network layer is egress *control*, not *prevention* — see
 
 ## Requirements
 
-- `perl` (core modules only — nothing from CPAN)
-- `bwrap` (bubblewrap) 0.10 or newer — the `.claude` overlays need its
+- `perl` (core modules only — nothing from CPAN), and POSIX `cp` and
+  `chmod` for the state dir seeding
+- `bwrap` (bubblewrap) 0.10 or newer — the worktree overlays need its
   overlay options, and a kernel that allows unprivileged overlayfs (5.11,
-  or a vendor backport) on the filesystems holding the repo and
-  `~/.claude` — probed at startup
+  or a vendor backport) on the filesystem holding the repo — probed at
+  startup
 - `claude` (Claude Code CLI)
 - a `git` or `jj` repository (the wrapper refuses to run outside one)
 
@@ -81,10 +82,11 @@ than being silently forwarded.
 | Flag | Effect |
 | --- | --- |
 | `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today. |
-| `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. Paths overlapping `~/.claude` (either direction) or under the project's `.claude` are refused — the sandbox builds its own view of those. |
+| `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. Paths overlapping `~/.claude` (either direction), the sandbox state root, or under the project's `.claude` are refused — the sandbox mounts its own view of those. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--keep-env NAME` | Pass one environment variable through into the session instead of clearing it. Repeatable — see below. |
+| `--reseed` | Copy the host's claude config into this project's sandbox state again, replacing the session's copy of it — see [Claude state](#claude-state). |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--no-lan-filter` | Let the session reach same-subnet (LAN) hosts directly, around the proxy — see below. |
 | `--allow-reserved` | Let an allowlisted *name* resolve to a loopback or private address. Off by default — see below. |
@@ -102,55 +104,67 @@ stack traces open correctly in your editor.
 
 ## What the session can see
 
-**Read-write:** the project root (only this one), this project's transcript
-dir under `~/.claude/projects/` (minus its `memory/`, below),
-`~/.claude/.credentials.json`,
-`~/.claude.json`, and a cache directory of aye-buddy's own (see
+**Read-write:** the project root (only this one); a claude state dir of
+aye-buddy's own for this project, mounted at `~/.claude` (see
+[Claude state](#claude-state)); the host's `~/.claude/.credentials.json`,
+mounted over it; and a cache directory of aye-buddy's own (see
 [Caches](#caches)).
 
 **Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git and
 SSH *config* (`~/.gitconfig`, `~/.ssh/config`, `~/.ssh/known_hosts`); the
 project's `.git/hooks`, `.git/config`, `.git/modules` and its `.claude/`
-— a later host-side `claude` run in this repo acts on that dir the same
-way it acts on `~/.claude/`, so a session can't plant hooks, skills or
-settings there (it's created empty when the repo has none, so the guard
-holds there too); and the flat `~/.claude/` config files a later
-host-side `claude` run would act on — `settings.json`,
-`settings.local.json`, `CLAUDE.md`, `mcp.json`, `.mcp.json`,
-`statusline-command.sh`; and this project's `memory/` under its transcript
-dir — `claude` reads `MEMORY.md` from there into every later session of the
-project, host-side runs included, so a session can't leave the next one
-standing instructions through it (created empty when absent, like the
-project `.claude/`).
+— a later host-side `claude` run in this repo acts on that dir, so a
+session can't plant hooks, skills or settings there (it's created empty
+when the repo has none, so the guard holds there too).
 
-**Visible, writes discarded:** the `~/.claude/` content dirs a later
-host-side `claude` run would load — `commands/`, `agents/`, `skills/`,
-`output-styles/`, `plugins/`, `hooks/`, `scripts/` — and the worktree
-dirs, `.claude/worktrees/` plus the `.git/worktrees/` admin dir, so
-in-session `git worktree` use works without leaving the host repo a
-half-created worktree. Each is an overlay: the host's files show
-through, and writes land in a tmpfs upper layer that is thrown away at
-exit. Slash commands, agents, skills, hooks and statusline scripts
-living there work inside the sandbox, and a session can add or edit them
-for its own use — but nothing of that reaches the host or survives into
-the next run, except a worktree's commits and branch, which live in the
-shared `.git`.
+**Visible, writes discarded:** the worktree dirs, `.claude/worktrees/`
+plus the `.git/worktrees/` admin dir, so in-session `git worktree` use
+works without leaving the host repo a half-created worktree. Each is an
+overlay: the host's files show through, and writes land in a tmpfs upper
+layer that is thrown away at exit — except a worktree's commits and
+branch, which live in the shared `.git`.
 
-The rest of `~/.claude/` is **not mounted at all**: the session gets an
-empty directory with only the paths above bound into it. Other projects'
-transcripts, `history.jsonl`, `file-history/`, `debug/` and `paste-cache/`
-are unreachable, and so is anything a future `claude` version adds — an
-unlisted path is sandbox-local rather than writable in your real home.
+### Claude state
 
-That includes your own scripts sitting directly in `~/.claude/`: a hook
-command pointing at `~/.claude/foo.sh` gets ENOENT inside the sandbox.
-Keep them in `~/.claude/hooks/` or `~/.claude/scripts/`; anywhere else in
-`$HOME` needs `--bind-ro`.
+The host's `~/.claude` is never mounted. The session gets a state dir of
+aye-buddy's own instead, one per project and agent, under
+`~/.local/state/aye-buddy/claude/` (`XDG_STATE_HOME` honoured), named
+after the project path: `/` becomes `-`, `-` becomes `__` and `_`
+becomes `_-`, so `/home/me/src/my-app` is `-home-me-src-my__app`. It is
+mounted at `~/.claude`, and `~/.claude.json` is served from it too.
 
-`CLAUDE_CONFIG_DIR` is honoured: with it set, everything above that names
-`~/.claude/` or `~/.claude.json` lives under that directory instead, it
-gets an empty tmpfs of its own if it isn't under `$HOME`, and the variable
-is forwarded so the session reads the same root the host does. A relative
+On the first run in a project the config a host-side `claude` loads is
+copied in: `settings.json`, `settings.local.json`, `CLAUDE.md`,
+`mcp.json`, `.mcp.json`, `keybindings.json`, `statusline-command.sh`,
+and the `commands/`, `agents/`, `skills/`, `output-styles/`, `rules/`,
+`workflows/`, `themes/`, `plugins/`, `hooks/` and `scripts/` dirs. An
+item that is itself a symlink is followed, as a dotfiles manager leaves
+it; links inside are copied as links.
+`~/.claude.json` is copied with its per-project map cut down to this
+project, since the other entries name every repo you've opened.
+Everything else — other projects' transcripts, `history.jsonl`,
+`file-history/` — stays out. That includes a script sitting directly in
+`~/.claude/`: a hook command pointing at `~/.claude/foo.sh` gets ENOENT
+inside the sandbox. Keep such scripts in `~/.claude/hooks/` or
+`~/.claude/scripts/`, which are copied at the same paths and keep
+working.
+
+From then on the dir is the session's. Transcripts, prompt history,
+memory, settings changed with `/effort` or `/config`, an in-session
+plugin install: all of it persists across runs of this project, and none
+of it is read by a host-side `claude`. The copy is not refreshed. A skill
+or setting you change on the host reaches a project's sandbox only with
+`--reseed`, which replaces the copied items — a session's additions
+inside them go with it — and keeps the rest. It refuses to run while a
+session is up in that project, and a session refuses to start while a
+reseed is in progress.
+
+Only the credentials file is shared: the host's is mounted over the
+state dir's copy, so one login serves both sides.
+
+`CLAUDE_CONFIG_DIR` is honoured: with it set, the state dir is seeded
+from and mounted at that directory instead, `~/.claude.json` lives inside
+it, and the variable is forwarded so the session looks there. A relative
 value is refused.
 
 **Forwarded:** the filtered network, a minimal set of environment
@@ -342,36 +356,25 @@ secrets out of `--keep-env`.
 - **Git worktrees and submodule working dirs are refused.** Their `.git`
   points outside the project directory, which the sandbox doesn't bind, so
   git would break inside. Run from the main checkout instead.
-- **A repo overlapping `$HOME` or `~/.claude` is refused.** Both are tmpfs in
-  the sandbox and the project directory is bound over them, so a dotfiles repo
-  in `~`, a versioned `~/.claude`, or a repo `~/.claude` symlinks into would
-  mount the real thing back read-write and bypass the allowlist. Keep the repo
-  elsewhere below `$HOME`.
-- **Some in-session config writes fail.** Settings that `claude` persists
-  to `~/.claude/settings.json` (e.g. `/effort`) error because that file is
-  read-only in the sandbox. Set them on the host beforehand, or pass them
-  per invocation. `/statusline` fails for the same reason, and its script
-  would land in the tmpfs anyway — configure it on the host, under
-  `~/.claude/scripts/`. The project's `.claude/` is read-only too, so
-  writes there — `.claude/settings.local.json` — fail in-session; edit
-  project-scoped config on the host. A project `.claude` that is a
-  symlink, or not a directory, is refused, since a read-only bind would
-  expose a symlink's target instead of guarding it. The same goes for
-  this project's `memory/` under its transcript dir: a session sees the
-  host's memories but can't save new ones, since a memory write
-  fails in-session. Add memories from a host-side `claude`, or by hand.
-- **Some `~/.claude` state doesn't persist.** Only this project's transcript
-  dir is bound back, so prompt history (`history.jsonl`), file history and
-  anything a newer `claude` keeps elsewhere under `~/.claude/` lives in the
-  sandbox tmpfs and is gone at exit. `--continue` and `--resume` still work
-  for this project. If `claude` changes how it names those transcript dirs,
-  aye-buddy warns at startup rather than losing them silently. Writes into
-  the overlaid dirs go the same way: an in-session plugin install or
-  generated skill works until exit, then vanishes — install those on the
-  host to keep them. An in-session `git worktree add` goes the same way:
-  the checkout under `.claude/worktrees/` and its `.git/worktrees/`
-  registration vanish at exit, while the branch and its commits persist
-  in `.git`.
+- **A repo overlapping `$HOME` or `~/.claude` is refused.** Both are
+  mounted over in the sandbox — `$HOME` by a tmpfs, `~/.claude` by the
+  state dir — and the project directory is bound over them, so a dotfiles
+  repo in `~`, a versioned `~/.claude`, or a repo `~/.claude` symlinks into
+  would mount the real thing back read-write. Keep the repo elsewhere
+  below `$HOME`.
+- **Project-scoped config writes fail.** The project's `.claude/` is
+  read-only, so writes there — `.claude/settings.local.json` — fail
+  in-session; edit project-scoped config on the host. A project `.claude`
+  that is a symlink, or not a directory, is refused, since a read-only
+  bind would expose a symlink's target instead of guarding it.
+- **Host and sandbox state diverge.** A sandboxed session and a host-side
+  `claude` in the same repo keep separate transcripts, memory and
+  settings: `--continue` and `--resume` in the sandbox see only sandboxed
+  sessions, and the other way round. Host-side config changes need
+  `--reseed`, which discards what a session added to the copied dirs. An
+  in-session `git worktree add` still vanishes at exit: the checkout under
+  `.claude/worktrees/` and its `.git/worktrees/` registration are
+  overlays, while the branch and its commits persist in `.git`.
 - **The credentials file is readable *and* writable in-session.** `claude`
   needs the OAuth token and has to be able to rewrite it on refresh, so the
   file is bound read-write; a payload runs under the same uid, so it can read
@@ -387,12 +390,13 @@ secrets out of `--keep-env`.
   aye-buddy creates an empty one first if you've never logged in. Don't run
   a host-side `claude` alongside a sandboxed one; restart the sandbox if you
   do.
-- **API-key auth means the session can read *and* rewrite the key.** A
-  `/login`-managed key lives in `~/.claude.json`, which is bound read-write
-  so `claude` can keep its own state. Reading it is unavoidable — billing
-  against a key requires the key to be present — but the same file holds
-  `customApiKeyResponses.approved`, so a payload under the same uid can also
-  pre-approve a key of its own for later host runs. Prefer an OAuth login.
+- **API-key auth means the session can read the key.** A
+  `/login`-managed key lives in `~/.claude.json`, which the session has a
+  copy of. Reading it is unavoidable — billing against a key requires the
+  key to be present. The copy is the sandbox's own, so a payload rewriting
+  it, or pre-approving a key of its own through
+  `customApiKeyResponses.approved`, affects later sandboxed runs of this
+  project and no host run. Prefer an OAuth login.
 
 ## Tests
 
@@ -402,7 +406,7 @@ make test
 
 Black-box tests for option parsing and the egress helpers (`t/`). The full
 network mechanism needs real namespaces and is verified out-of-band by
-`t/manual/egress-check.sh`; the `.claude` overlays likewise by
+`t/manual/egress-check.sh`; the worktree overlays likewise by
 `t/manual/overlay-check.sh`, run in two phases around a real session (see its
 header).
 
