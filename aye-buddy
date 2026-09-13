@@ -450,18 +450,21 @@ sub validate_dir_env {
     return $val;
 }
 
-my $claude_dir = validate_dir_env($agent_spec->{config_env}, $agent_spec->{config_dir});
-fail(printable($claude_dir) . " is not a directory; the claude state dir must be one")
-    if -e $claude_dir && !-d _;
-unless (-e $claude_dir) {
-    make_path($claude_dir, { mode => 0700, error => \my $err });  ## no critic (ProhibitLeadingZeros)
+# The agent's config dir on the host: what the session's state is seeded from,
+# and where that state is mounted in the session.
+my $name = $agent_spec->{name};
+my $config_dir = validate_dir_env($agent_spec->{config_env}, $agent_spec->{config_dir});
+fail(printable($config_dir) . " is not a directory; the $name config dir must be one")
+    if -e $config_dir && !-d _;
+unless (-e $config_dir) {
+    make_path($config_dir, { mode => 0700, error => \my $err });  ## no critic (ProhibitLeadingZeros)
     my $msg = path_error($err);
-    fail("cannot create " . printable($claude_dir) . ": " . printable($msg)) if defined $msg;
+    fail("cannot create " . printable($config_dir) . ": " . printable($msg)) if defined $msg;
 }
 
 require_overlay_support($project_dir);
 
-my $claude_real = Cwd::abs_path($claude_dir) // $claude_dir;
+my $config_real = Cwd::abs_path($config_dir) // $config_dir;
 # The project dir is bound rw, so it must not overlap $HOME, which is tmpfs, or
 # the state dir, where the session's own copy is mounted. Compare the raw $HOME
 # as well, for the same reason as above.
@@ -472,28 +475,30 @@ for my $h (Cwd::abs_path($home) // (), $home) {
         if under($h, $project_dir);
 }
 # Either direction: a repo under the state dir, and a repo it symlinks into.
-fail(printable($project_dir) . " overlaps " . printable($claude_dir) . ", where the sandbox\n" .
-     "  mounts the session's own claude state; one would cover the other.\n" .
+fail(printable($project_dir) . " overlaps " . printable($config_dir) . ", where the sandbox\n" .
+     "  mounts the session's own $name state; one would cover the other.\n" .
      "  Run aye-buddy from a repository elsewhere instead.")
-    if under($claude_real, $project_dir) || under($project_dir, $claude_real);
+    if under($config_real, $project_dir) || under($project_dir, $config_real);
 # ~/.cache is bound last, over everything mounted into the state dir before it.
-fail(printable($claude_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
-     "  cache dir at; the claude state there would be covered by it.")
-    if under($claude_dir, "$home/.cache");
+fail(printable($config_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
+     "  cache dir at; the $name state there would be covered by it.")
+    if under($config_dir, "$home/.cache");
 
-# Disallow bind mounts under the state dir and at .claude.json, where the
-# session's own copies are mounted, and the project .claude, where we use
-# overlayfs.
-my $claude_json = defined $ENV{CLAUDE_CONFIG_DIR} ? "$claude_dir/.claude.json" : "$home/.claude.json";
+# Disallow bind mounts under the config dir and at the state files served
+# outside it, where the session's own copies are mounted, and the project
+# .claude, where we use overlayfs.
+my @state_binds = @{$agent_spec->{state_binds}};   # [state file, session path]
 my $proj_claude = "$project_dir/.claude";
 for my $bind (@extra_rw, @extra_ro) {
-    fail(printable($bind) . " overlaps " . printable($claude_dir) . ", where the sandbox mounts\n" .
-         "  its own copy of the claude state; a bind there would either be covered\n" .
+    fail(printable($bind) . " overlaps " . printable($config_dir) . ", where the sandbox mounts\n" .
+         "  its own copy of the $name state; a bind there would either be covered\n" .
          "  by that copy or hand the session the host's.")
-        if under($bind, $claude_real) || under($claude_real, $bind);
-    fail(printable($bind) . " is " . printable($claude_json) . ", where the sandbox mounts\n" .
-         "  its own copy; the bind would be covered by it.")
-        if under($claude_json, $bind);
+        if under($bind, $config_real) || under($config_real, $bind);
+    for my $at (map { $_->[1] } @state_binds) {
+        fail(printable($bind) . " is " . printable($at) . ", where the sandbox mounts\n" .
+             "  its own copy; the bind would be covered by it.")
+            if under($at, $bind);
+    }
     for my $f ($proj_claude, Cwd::abs_path($proj_claude) // ()) {
         fail(printable($bind) . " is under the project's .claude, which the sandbox\n" .
              "  covers with its own read-only and throwaway mounts; the bind would\n" .
@@ -583,21 +588,21 @@ if (@$cache_err || !-d $cache_dir) {
        . ($msg ? ": " . printable($msg) : ''));
 }
 
-# The session's claude state: a dir of aye-buddy's own per project, mounted at the state dir path.
+# The session's agent state: a dir of aye-buddy's own per project, mounted at the config dir path.
 my $xdg_state = $ENV{XDG_STATE_HOME};
 my $state_root = (defined $xdg_state && $xdg_state =~ m{^/} ? $xdg_state
                                                             : "$home/.local/state") . '/aye-buddy';
 my $agent_state = "$state_root/$agent";
 # Under a path the session sees it would hand every project's state to any
 # session; over one it would be covered, or bind that path's content back.
-# The claude state dir is what it is seeded from, so that one neither way.
+# The config dir is what it is seeded from, so that one neither way.
 # Checked before anything is created, so a refused root leaves nothing behind.
 for my $root (Cwd::abs_path($state_root) // (), $state_root) {
-    for my $src ($project_dir, Cwd::abs_path($cache_dir) // $cache_dir, $claude_real,
+    for my $src ($project_dir, Cwd::abs_path($cache_dir) // $cache_dir, $config_real,
                  @extra_rw, @extra_ro, qw(/usr /etc /opt /nix)) {
         fail(printable($state_root) . " overlaps " . printable($src) . ";\n" .
              "  the sandbox state dir must not overlap a path the session sees,\n" .
-             "  nor the claude state dir it is seeded from")
+             "  nor the $name config dir it is seeded from")
             if under($root, $src) || under($src, $root);
     }
 }
@@ -640,13 +645,10 @@ if (!$exclusive) {
 # Decided under the lock: a first run that got in ahead has finished by now.
 my $fresh = !-e $state;
 
-# What the host contributes: the config a host-side claude loads. Copied, so the
-# session's edits stay its own. Transcripts, history and everything else are
-# the session's from the start.
-my @seed = qw(settings.json settings.local.json CLAUDE.md mcp.json .mcp.json
-              keybindings.json statusline-command.sh
-              commands agents skills output-styles rules workflows themes
-              plugins hooks scripts);
+# What the host contributes: the config a host-side agent loads, as the module
+# lists it. Copied, so the session's edits stay its own. Transcripts, history
+# and everything else are the session's from the start.
+my @seed = @{$agent_spec->{seed}};
 
 # cp -R -H -p is the copy wanted, and the flags are POSIX: recurse, follow
 # the item itself when it is a symlink, as a dotfiles manager leaves it, keep
@@ -660,53 +662,22 @@ sub copy_tree {
 
 sub seed_item {
     my ($item, $dst) = @_;
-    my $src = "$claude_dir/$item";
+    my $src = "$config_dir/$item";
     unless (-e $src) {
         warning("not seeded: " . printable($src) . " is a dangling symlink") if -l $src;
         return;
     }
-    # Followed, but not into what holds other projects' state: the claude dir's
-    # projects/, anything above the claude dir, and the state root.
+    # Followed, but not into what holds other projects' state: the config dir's
+    # projects/, anything above the config dir, and the state root.
     my $real = Cwd::abs_path($src);
     if (-l $src && defined $real
-        && (under($real, "$claude_real/projects") || under($claude_real, $real)
+        && (under($real, "$config_real/projects") || under($config_real, $real)
             || under($real, $state_real) || under($state_real, $real))) {
         warning("not seeded: " . printable($src) . " points at " . printable($real)
               . ",\n  which holds other projects' state");
         return;
     }
     copy_tree($src, $dst);
-    return;
-}
-
-# .claude.json holds onboarding state, the theme, MCP servers and a map keyed
-# by project path. Seeded with the map cut to this project - the other entries
-# name every repo the host has opened - and the session's from then on, so no
-# host-side claude reads what a session wrote (user-scoped MCP servers are
-# commands it would run).
-sub seed_claude_json {
-    my ($dir) = @_;
-    my $doc = '';
-    if (-s $claude_json) {
-        open(my $in, '<:raw', $claude_json) or fail("cannot read " . printable($claude_json) . ": $!");
-        my $raw = do { local $/; <$in> };
-        close $in;
-        require JSON::PP;   # a first run only
-        my $json = JSON::PP->new->utf8->canonical;
-        my $data = eval { $json->decode($raw) };
-        defined $data or fail("cannot parse " . printable($claude_json) . " to seed the session's copy: "
-                            . printable($@ =~ s/\s+\z//r));
-        if (ref $data eq 'HASH' && ref $data->{projects} eq 'HASH') {
-            my $mine = $data->{projects}{$project_dir};
-            $data->{projects} = defined $mine ? { $project_dir => $mine } : {};
-        }
-        $doc = $json->encode($data);
-    }
-    my $f = "$dir/.claude.json";
-    sysopen(my $out, $f, O_WRONLY | O_CREAT | O_EXCL, 0600)
-        or fail("cannot create " . printable($f) . ": $!");
-    print {$out} $doc;
-    close $out or fail("cannot write " . printable($f) . ": $!");
     return;
 }
 
@@ -734,21 +705,23 @@ sub create_empty {
 }
 
 if ($fresh) {
-    print STDERR "aye-buddy: seeding the sandbox claude state " . printable($state)
-               . "\n  from " . printable($claude_dir) . "\n";
+    print STDERR "aye-buddy: seeding the sandbox $name state " . printable($state)
+               . "\n  from " . printable($config_dir) . "\n";
     my $build = "${state}_new";
     remove_path($build);
     mkdir $build, 0700 or fail("cannot create " . printable($build) . ": $!");  ## no critic (ProhibitLeadingZeros)
     seed_item($_, "$build/$_") for @seed;
-    seed_claude_json($build);
-    create_empty("$build/.credentials.json");
+    # The module's own seeding, for what a copy can't do (claude: .claude.json
+    # with its project map cut down); then the state files it left absent.
+    eval { $agent_spec->{seed_state}->($build, $project_dir); 1 } or fail($@ =~ s/\n\z//r);
+    create_empty("$build/$_") for grep { !-e "$build/$_" } @{$agent_spec->{state_files}};
     rename $build, $state or fail("cannot rename " . printable($build) . " into place: $!");
 }
 else {
     fail(printable($state) . " is not a directory") unless -d $state;
     if ($reseed) {
-        print STDERR "aye-buddy: reseeding the sandbox claude state " . printable($state)
-                   . "\n  from " . printable($claude_dir) . "\n";
+        print STDERR "aye-buddy: reseeding the sandbox $name state " . printable($state)
+                   . "\n  from " . printable($config_dir) . "\n";
         my $stage = "${state}_new";
         remove_path($stage);
         mkdir $stage, 0700 or fail("cannot create " . printable($stage) . ": $!");  ## no critic (ProhibitLeadingZeros)
@@ -761,7 +734,7 @@ else {
         }
         rmdir $stage or fail("cannot remove " . printable($stage) . ": $!");
     }
-    for my $f ("$state/.claude.json", "$state/.credentials.json") {
+    for my $f (map { "$state/$_" } @{$agent_spec->{state_files}}) {
         fail(printable($f) . " is a symlink; binding it would expose its target") if -l $f;
         create_empty($f) unless -e $f;
         fail(printable($f) . " is not a regular file") unless -f $f;
@@ -770,9 +743,10 @@ else {
 # The seed is done; drop to the shared hold a session keeps.
 flock($lock_fh, LOCK_SH) or fail("cannot re-lock " . printable($lock_file) . ": $!") if $exclusive;
 
-# Bound rw below, and a bind needs the file to exist to preserve OAuth token.
-my $creds = "$claude_dir/.credentials.json";
-create_empty($creds) unless -e $creds;
+# The host credentials, bound rw below so a token refresh lands on the host;
+# a bind needs its source to exist.
+my @creds = map { "$config_dir/$_" } @{$agent_spec->{credentials}};
+create_empty($_) for grep { !-e $_ } @creds;
 
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
@@ -820,13 +794,14 @@ try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
 bind_ro($proj_claude);
 try_tmp_overlay($_) for @worktree_dirs;
-# The session's claude state, at the path claude looks for it. Nothing of the
-# host's is mounted there besides the token below.
-bind_rw($state, $claude_dir);
-bind_rw("$state/.claude.json", $claude_json) unless defined $ENV{CLAUDE_CONFIG_DIR};
-# Has to be rw, because of OAuth token refreshes. After the state bind, so the
-# host's token is what claude finds at that path inside it.
-bind_rw($creds);
+# The session's agent state, at the path the agent looks for it, plus the
+# state files it looks for elsewhere. Nothing of the host's is mounted there
+# besides the credentials below.
+bind_rw($state, $config_dir);
+bind_rw("$state/$_->[0]", $_->[1]) for @state_binds;
+# Have to be rw, because of token refreshes. After the state bind, so the
+# host's token is what the agent finds at that path inside it.
+bind_rw($_) for @creds;
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");
