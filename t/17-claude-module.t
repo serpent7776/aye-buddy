@@ -9,8 +9,8 @@ use lib 't/lib';
 use AyeTest;
 
 # Claude.pl answers, for claude, the questions aye-buddy asks of an agent.
-# Until aye-buddy loads it, what it answers is pinned here against what
-# aye-buddy does on its own, so the two can't drift apart in the meantime.
+# The spec is pinned here on its own, and then against what a run of
+# aye-buddy builds from it, so the interface and its use stay in step.
 require "$Bin/../Claude.pl";  ## no critic (RequireBarewordIncludes)
 
 sub slurp { my ($f) = @_; open my $fh, '<', $f or return; local $/; return scalar <$fh> }
@@ -117,7 +117,7 @@ subtest 'with CLAUDE_CONFIG_DIR the seed reads .claude.json from there' => sub {
     like slurp("$root/build/.claude.json"), qr/"theme":"cfg"/;
 };
 
-# What aye-buddy does today, checked against the module's answers.
+# What aye-buddy builds from the module's answers.
 subtest 'the module agrees with aye-buddy' => sub {
     my $r = run_aye({ env => { AYE_BUDDY_DEBUG => 1 } }, '-p', 'hi');
     is $r->{exit}, 0;
