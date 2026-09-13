@@ -54,7 +54,7 @@ if grep -q 'Format:%h' "$SRC_DIR/$SCRIPT"; then
     hash=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null) || hash=""
 fi
 
-for f in "$SCRIPT" AyeSeccomp.pm aye-landlock aye-proxy aye-netns-seal filter.bpf filter-nested.bpf; do
+for f in "$SCRIPT" AyeSeccomp.pm Claude.pl aye-landlock aye-proxy aye-netns-seal filter.bpf filter-nested.bpf; do
     if [ ! -f "$SRC_DIR/$f" ]; then
         msg="install.sh: required $SRC_DIR/$f not found"
         case "$f" in *.bpf) msg="$msg (run \`make seccomp\` to build it)" ;; esac
@@ -62,7 +62,7 @@ for f in "$SCRIPT" AyeSeccomp.pm aye-landlock aye-proxy aye-netns-seal filter.bp
         exit 1
     fi
     case "$f" in
-        *.bpf|*.pm) mode=0644 ;;
+        *.bpf|*.pm|*.pl) mode=0644 ;;
         *)          mode=0755 ;;
     esac
     if [ "$f" = "$SCRIPT" ] && [ -n "$hash" ]; then

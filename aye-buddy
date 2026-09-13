@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# aye-buddy: run claude in a sandbox.
+# aye-buddy: run a coding agent in a sandbox.
 
 use strict;
 use warnings;
@@ -95,22 +95,9 @@ sub require_cmd_version {
         or fail("$cmd $m.$n is too old: aye-buddy needs $cmd >= $maj.$min for $why");
 }
 
-# Supported agents. Each entry names the binary to run plus the fixed args and
-# env aye-buddy injects for it; --agent picks one (default claude).
+# Supported agents. Each in it's own module.
 my %AGENTS = (
-    claude => {
-        bin  => 'claude',
-        args => ['--dangerously-skip-permissions',
-                 '--settings', '{"sandbox":{"enabled":false}}'],
-        # Tell claude it's already inside an external sandbox so it skips the
-        # workspace trust dialog (the bwrap boundary is the real trust decision),
-        # and stop non-essential telemetry/error egress at the source.
-        env  => {
-            CLAUDE_CODE_SANDBOXED   => '1',
-            DISABLE_TELEMETRY       => '1',
-            DISABLE_ERROR_REPORTING => '1',
-        },
-    },
+    claude => 'Claude',
 );
 
 sub usage {
@@ -134,10 +121,10 @@ options:
                             only 443 is allowed (repeatable)
   --keep-env NAME           pass this environment variable through into the
                             session instead of clearing it (repeatable)
-  --reseed                  copy the host claude config (settings, skills,
+  --reseed                  copy the host agent config (settings, skills,
                             plugins, ...) into this project's sandbox state
                             again, replacing the session's copy; transcripts,
-                            memory and .claude.json are kept
+                            memory and the session's own files are kept
   --no-net-filter           turn off egress filtering, use the host network
   --no-lan-filter           let the session reach same-subnet (LAN) hosts
                             directly, around the proxy
@@ -158,16 +145,16 @@ USAGE
 }
 
 # Parse aye-buddy's own options off the front of @ARGV; the rest forwards to
-# claude. require_order stops at the first non-option and pass_through leaves the
-# remainder in @ARGV; no_auto_abbrev/no_ignore_case keep our flags exact-match so
-# a claude arg can't accidentally trigger one (e.g. `--all` is not --allow-bwrap).
+# the agent. require_order stops at the first non-option and pass_through leaves
+# the remainder in @ARGV; no_auto_abbrev/no_ignore_case keep our flags exact-match
+# so an agent arg can't accidentally trigger one (e.g. `--all` is not --allow-bwrap).
 #   --agent NAME selects which agent to run (default claude). NAME must be a key
 #     of %AGENTS above; an unknown one fails rather than reaching bwrap.
-#   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing):
+#   --allow-bwrap lets the sandboxed agent run bwrap itself (nested sandboxing):
 #     opt-in, it widens the syscall surface and forces Landlock off, leaving the
 #     bwrap mount-namespace allowlist as the only outer wall.
 #   --bind/--bind-ro PATH expose an extra host path at the same path inside the
-#     sandbox (rw/ro). Repeatable. Resolved below so claude never sees them. `:s`
+#     sandbox (rw/ro). Repeatable. Resolved below so the agent never sees them. `:s`
 #     (optional value) so a missing PATH lands as '' we can reject, rather than
 #     swallowing the next flag as the path.
 #   --allow-host HOST[:PORT] adds an extra host to the network egress allowlist
@@ -236,17 +223,22 @@ on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
 require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the worktree overlays');
 
-my $agent_spec = $AGENTS{$agent}
+my $agent_pkg = $AGENTS{$agent}
     or fail("unknown agent: " . printable($agent)
           . " (supported: " . join(', ', sort keys %AGENTS) . ")");
+my $home = validate_dir_env('HOME', $ENV{HOME});
+eval { require "$RealBin/$agent_pkg.pl"; 1 }  ## no critic (RequireBarewordIncludes)
+    or fail("cannot load the $agent agent module: " . ($@ =~ s/\s+\z//r));
+my $agent_spec = ($agent_pkg->can('spec') // fail("$agent_pkg.pl defines no spec"))
+    ->($home, \%ENV);
 on_path($agent_spec->{bin})
     or fail("required command not found on PATH: $agent_spec->{bin}");
 
 # pass_through leaves a leading `--` in place; consume it as our separator so a
-# literal `--allow-bwrap` etc. can still reach claude untouched.
+# literal `--allow-bwrap` etc. can still reach the agent untouched.
 my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
-# Without an explicit `--`, an aye-buddy flag among the leftover claude args is a
-# misplaced flag, not a claude one: fail loudly rather than forward it silently.
+# Without an explicit `--`, an aye-buddy flag among the leftover agent args is a
+# misplaced flag, not the agent's: fail loudly rather than forward it silently.
 if (!$saw_sep) {
     for my $arg (@ARGV) {
         # --bind=PATH is as much ours as --bind PATH, so match on the name only.
@@ -299,13 +291,14 @@ sub validate_allow_host {
 # pointers, the toolchain cache redirections (XDG_CACHE_HOME picks the host dir
 # we bind at ~/.cache; kept, it would send every XDG-respecting tool to the
 # tmpfs instead), the Landlock lists, the forwarded agent socket, and whatever
-# the agent entry injects. A --keep-env for one of these would either lose to
-# ours or quietly break the layer it belongs to, so name one and get told rather
-# than guess which won.
+# the agent module injects or reads. A --keep-env for one of these would either
+# lose to ours or quietly break the layer it belongs to, so name one and get
+# told rather than guess which won.
 my %reserved_env = map { $_ => 1 } (
     qw(HOME USER LOGNAME PATH PWD
-       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK CLAUDE_CONFIG_DIR
+       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK
        XDG_CACHE_HOME npm_config_cache CARGO_HOME GOPATH),
+    $agent_spec->{config_env},
     # Only set when the egress filter is on; without it the session is on the
     # host network and a kept proxy var is the only way to point it at one. The
     # bypass vars go with them: a kept no_proxy=* sends clients around the proxy
@@ -355,11 +348,9 @@ sub validate_keep_env {
 # An entry matches that exact hostname only, so every host a toolchain talks to
 # has to be named here. The '.example.com' form covers subdomains too, reaching
 # whatever they serve on the allowed port, so the defaults don't use it.
+# The agent's own API hosts come from its module, so a session of one agent
+# holds no route to another's vendor.
 my @default_allow_hosts = (
-    # Claude API and OAuth — without these the session can't run.
-    'api.anthropic.com',
-    'platform.claude.com',
-    'console.anthropic.com',
     # npm
     'registry.npmjs.org',
     # PyPI
@@ -382,7 +373,7 @@ my @default_allow_hosts = (
     'gitlab.com',
     'codeberg.org',
 );
-my @allow_hosts = (@default_allow_hosts, @extra_hosts);
+my @allow_hosts = (@{$agent_spec->{hosts}}, @default_allow_hosts, @extra_hosts);
 print STDERR "aye-buddy: egress allowlist: ", join(', ', @allow_hosts), "\n"
     if $ENV{AYE_BUDDY_DEBUG};
 
@@ -459,19 +450,21 @@ sub validate_dir_env {
     return $val;
 }
 
-my $home = validate_dir_env('HOME', $ENV{HOME});
-my $claude_dir = validate_dir_env('CLAUDE_CONFIG_DIR', $ENV{CLAUDE_CONFIG_DIR} // "$home/.claude");
-fail(printable($claude_dir) . " is not a directory; the claude state dir must be one")
-    if -e $claude_dir && !-d _;
-unless (-e $claude_dir) {
-    make_path($claude_dir, { mode => 0700, error => \my $err });  ## no critic (ProhibitLeadingZeros)
+# The agent's config dir on the host: what the session's state is seeded from,
+# and where that state is mounted in the session.
+my $name = $agent_spec->{name};
+my $config_dir = validate_dir_env($agent_spec->{config_env}, $agent_spec->{config_dir});
+fail(printable($config_dir) . " is not a directory; the $name config dir must be one")
+    if -e $config_dir && !-d _;
+unless (-e $config_dir) {
+    make_path($config_dir, { mode => 0700, error => \my $err });  ## no critic (ProhibitLeadingZeros)
     my $msg = path_error($err);
-    fail("cannot create " . printable($claude_dir) . ": " . printable($msg)) if defined $msg;
+    fail("cannot create " . printable($config_dir) . ": " . printable($msg)) if defined $msg;
 }
 
 require_overlay_support($project_dir);
 
-my $claude_real = Cwd::abs_path($claude_dir) // $claude_dir;
+my $config_real = Cwd::abs_path($config_dir) // $config_dir;
 # The project dir is bound rw, so it must not overlap $HOME, which is tmpfs, or
 # the state dir, where the session's own copy is mounted. Compare the raw $HOME
 # as well, for the same reason as above.
@@ -482,46 +475,52 @@ for my $h (Cwd::abs_path($home) // (), $home) {
         if under($h, $project_dir);
 }
 # Either direction: a repo under the state dir, and a repo it symlinks into.
-fail(printable($project_dir) . " overlaps " . printable($claude_dir) . ", where the sandbox\n" .
-     "  mounts the session's own claude state; one would cover the other.\n" .
+fail(printable($project_dir) . " overlaps " . printable($config_dir) . ", where the sandbox\n" .
+     "  mounts the session's own $name state; one would cover the other.\n" .
      "  Run aye-buddy from a repository elsewhere instead.")
-    if under($claude_real, $project_dir) || under($project_dir, $claude_real);
+    if under($config_real, $project_dir) || under($project_dir, $config_real);
 # ~/.cache is bound last, over everything mounted into the state dir before it.
-fail(printable($claude_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
-     "  cache dir at; the claude state there would be covered by it.")
-    if under($claude_dir, "$home/.cache");
+fail(printable($config_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
+     "  cache dir at; the $name state there would be covered by it.")
+    if under($config_dir, "$home/.cache");
 
-# Disallow bind mounts under the state dir and at .claude.json, where the
-# session's own copies are mounted, and the project .claude, where we use
-# overlayfs.
-my $claude_json = defined $ENV{CLAUDE_CONFIG_DIR} ? "$claude_dir/.claude.json" : "$home/.claude.json";
-my $proj_claude = "$project_dir/.claude";
+# Disallow bind mounts under the config dir and at the state files served
+# outside it, where the session's own copies are mounted, and the agent's
+# project dir, where we use overlayfs.
+my @state_binds = @{$agent_spec->{state_binds}};   # [state file, session path]
+my $proj_name  = $agent_spec->{project_dir};       # claude: .claude
+my $proj_agent = "$project_dir/$proj_name";
 for my $bind (@extra_rw, @extra_ro) {
-    fail(printable($bind) . " overlaps " . printable($claude_dir) . ", where the sandbox mounts\n" .
-         "  its own copy of the claude state; a bind there would either be covered\n" .
+    fail(printable($bind) . " overlaps " . printable($config_dir) . ", where the sandbox mounts\n" .
+         "  its own copy of the $name state; a bind there would either be covered\n" .
          "  by that copy or hand the session the host's.")
-        if under($bind, $claude_real) || under($claude_real, $bind);
-    fail(printable($bind) . " is " . printable($claude_json) . ", where the sandbox mounts\n" .
-         "  its own copy; the bind would be covered by it.")
-        if under($claude_json, $bind);
-    for my $f ($proj_claude, Cwd::abs_path($proj_claude) // ()) {
-        fail(printable($bind) . " is under the project's .claude, which the sandbox\n" .
+        if under($bind, $config_real) || under($config_real, $bind);
+    for my $at (map { $_->[1] } @state_binds) {
+        fail(printable($bind) . " is " . printable($at) . ", where the sandbox mounts\n" .
+             "  its own copy; the bind would be covered by it.")
+            if under($at, $bind);
+    }
+    for my $f ($proj_agent, Cwd::abs_path($proj_agent) // ()) {
+        fail(printable($bind) . " is under the project's $proj_name, which the sandbox\n" .
              "  covers with its own read-only and throwaway mounts; the bind would\n" .
              "  be shadowed by them.")
             if under($bind, $f);
     }
 }
 
-# The project .claude and the worktree dirs are checked and created here,
+# The agent's project dir and the worktree dirs are checked and created here,
 # before the state dir is seeded, so a refusal leaves no state behind.
-fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
-   . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
-unless (-e $proj_claude) {
-    mkdir $proj_claude or fail("cannot create " . printable($proj_claude) . ": $!");
+fail(printable($proj_agent) . " is a symlink; binding it read-only would expose its target\n"
+   . "  Make it a real directory to sandbox this project.") if -l $proj_agent;
+unless (-e $proj_agent) {
+    mkdir $proj_agent or fail("cannot create " . printable($proj_agent) . ": $!");
 }
-fail(printable($proj_claude) . " is not a directory\n"
-   . "  Make it a real directory to sandbox this project.") unless -d $proj_claude;
-my @worktree_dirs = ("$proj_claude/worktrees", "$project_dir/.git/worktrees");
+fail(printable($proj_agent) . " is not a directory\n"
+   . "  Make it a real directory to sandbox this project.") unless -d $proj_agent;
+# The dirs a session may write but the project must not keep (claude: its
+# worktrees), and git's own worktree dir, get throwaway overlays.
+my @worktree_dirs = ((map { "$proj_agent/$_" } @{$agent_spec->{project_overlays}}),
+                     "$project_dir/.git/worktrees");
 for my $wt (@worktree_dirs) {
     fail(printable($wt) . " is a symlink; overlaying it would expose its target") if -l $wt;
     unless (-e $wt) {
@@ -593,21 +592,21 @@ if (@$cache_err || !-d $cache_dir) {
        . ($msg ? ": " . printable($msg) : ''));
 }
 
-# The session's claude state: a dir of aye-buddy's own per project, mounted at the state dir path.
+# The session's agent state: a dir of aye-buddy's own per project, mounted at the config dir path.
 my $xdg_state = $ENV{XDG_STATE_HOME};
 my $state_root = (defined $xdg_state && $xdg_state =~ m{^/} ? $xdg_state
                                                             : "$home/.local/state") . '/aye-buddy';
 my $agent_state = "$state_root/$agent";
 # Under a path the session sees it would hand every project's state to any
 # session; over one it would be covered, or bind that path's content back.
-# The claude state dir is what it is seeded from, so that one neither way.
+# The config dir is what it is seeded from, so that one neither way.
 # Checked before anything is created, so a refused root leaves nothing behind.
 for my $root (Cwd::abs_path($state_root) // (), $state_root) {
-    for my $src ($project_dir, Cwd::abs_path($cache_dir) // $cache_dir, $claude_real,
+    for my $src ($project_dir, Cwd::abs_path($cache_dir) // $cache_dir, $config_real,
                  @extra_rw, @extra_ro, qw(/usr /etc /opt /nix)) {
         fail(printable($state_root) . " overlaps " . printable($src) . ";\n" .
              "  the sandbox state dir must not overlap a path the session sees,\n" .
-             "  nor the claude state dir it is seeded from")
+             "  nor the $name config dir it is seeded from")
             if under($root, $src) || under($src, $root);
     }
 }
@@ -650,13 +649,10 @@ if (!$exclusive) {
 # Decided under the lock: a first run that got in ahead has finished by now.
 my $fresh = !-e $state;
 
-# What the host contributes: the config a host-side claude loads. Copied, so the
-# session's edits stay its own. Transcripts, history and everything else are
-# the session's from the start.
-my @seed = qw(settings.json settings.local.json CLAUDE.md mcp.json .mcp.json
-              keybindings.json statusline-command.sh
-              commands agents skills output-styles rules workflows themes
-              plugins hooks scripts);
+# What the host contributes: the config a host-side agent loads, as the module
+# lists it. Copied, so the session's edits stay its own. Transcripts, history
+# and everything else are the session's from the start.
+my @seed = @{$agent_spec->{seed}};
 
 # cp -R -H -p is the copy wanted, and the flags are POSIX: recurse, follow
 # the item itself when it is a symlink, as a dotfiles manager leaves it, keep
@@ -670,53 +666,22 @@ sub copy_tree {
 
 sub seed_item {
     my ($item, $dst) = @_;
-    my $src = "$claude_dir/$item";
+    my $src = "$config_dir/$item";
     unless (-e $src) {
         warning("not seeded: " . printable($src) . " is a dangling symlink") if -l $src;
         return;
     }
-    # Followed, but not into what holds other projects' state: the claude dir's
-    # projects/, anything above the claude dir, and the state root.
+    # Followed, but not into what holds other projects' state: the config dir's
+    # projects/, anything above the config dir, and the state root.
     my $real = Cwd::abs_path($src);
     if (-l $src && defined $real
-        && (under($real, "$claude_real/projects") || under($claude_real, $real)
+        && (under($real, "$config_real/projects") || under($config_real, $real)
             || under($real, $state_real) || under($state_real, $real))) {
         warning("not seeded: " . printable($src) . " points at " . printable($real)
               . ",\n  which holds other projects' state");
         return;
     }
     copy_tree($src, $dst);
-    return;
-}
-
-# .claude.json holds onboarding state, the theme, MCP servers and a map keyed
-# by project path. Seeded with the map cut to this project - the other entries
-# name every repo the host has opened - and the session's from then on, so no
-# host-side claude reads what a session wrote (user-scoped MCP servers are
-# commands it would run).
-sub seed_claude_json {
-    my ($dir) = @_;
-    my $doc = '';
-    if (-s $claude_json) {
-        open(my $in, '<:raw', $claude_json) or fail("cannot read " . printable($claude_json) . ": $!");
-        my $raw = do { local $/; <$in> };
-        close $in;
-        require JSON::PP;   # a first run only
-        my $json = JSON::PP->new->utf8->canonical;
-        my $data = eval { $json->decode($raw) };
-        defined $data or fail("cannot parse " . printable($claude_json) . " to seed the session's copy: "
-                            . printable($@ =~ s/\s+\z//r));
-        if (ref $data eq 'HASH' && ref $data->{projects} eq 'HASH') {
-            my $mine = $data->{projects}{$project_dir};
-            $data->{projects} = defined $mine ? { $project_dir => $mine } : {};
-        }
-        $doc = $json->encode($data);
-    }
-    my $f = "$dir/.claude.json";
-    sysopen(my $out, $f, O_WRONLY | O_CREAT | O_EXCL, 0600)
-        or fail("cannot create " . printable($f) . ": $!");
-    print {$out} $doc;
-    close $out or fail("cannot write " . printable($f) . ": $!");
     return;
 }
 
@@ -744,21 +709,23 @@ sub create_empty {
 }
 
 if ($fresh) {
-    print STDERR "aye-buddy: seeding the sandbox claude state " . printable($state)
-               . "\n  from " . printable($claude_dir) . "\n";
+    print STDERR "aye-buddy: seeding the sandbox $name state " . printable($state)
+               . "\n  from " . printable($config_dir) . "\n";
     my $build = "${state}_new";
     remove_path($build);
     mkdir $build, 0700 or fail("cannot create " . printable($build) . ": $!");  ## no critic (ProhibitLeadingZeros)
     seed_item($_, "$build/$_") for @seed;
-    seed_claude_json($build);
-    create_empty("$build/.credentials.json");
+    # The module's own seeding, for what a copy can't do (claude: .claude.json
+    # with its project map cut down); then the state files it left absent.
+    eval { $agent_spec->{seed_state}->($build, $project_dir); 1 } or fail($@ =~ s/\n\z//r);
+    create_empty("$build/$_") for grep { !-e "$build/$_" } @{$agent_spec->{state_files}};
     rename $build, $state or fail("cannot rename " . printable($build) . " into place: $!");
 }
 else {
     fail(printable($state) . " is not a directory") unless -d $state;
     if ($reseed) {
-        print STDERR "aye-buddy: reseeding the sandbox claude state " . printable($state)
-                   . "\n  from " . printable($claude_dir) . "\n";
+        print STDERR "aye-buddy: reseeding the sandbox $name state " . printable($state)
+                   . "\n  from " . printable($config_dir) . "\n";
         my $stage = "${state}_new";
         remove_path($stage);
         mkdir $stage, 0700 or fail("cannot create " . printable($stage) . ": $!");  ## no critic (ProhibitLeadingZeros)
@@ -771,7 +738,7 @@ else {
         }
         rmdir $stage or fail("cannot remove " . printable($stage) . ": $!");
     }
-    for my $f ("$state/.claude.json", "$state/.credentials.json") {
+    for my $f (map { "$state/$_" } @{$agent_spec->{state_files}}) {
         fail(printable($f) . " is a symlink; binding it would expose its target") if -l $f;
         create_empty($f) unless -e $f;
         fail(printable($f) . " is not a regular file") unless -f $f;
@@ -780,9 +747,10 @@ else {
 # The seed is done; drop to the shared hold a session keeps.
 flock($lock_fh, LOCK_SH) or fail("cannot re-lock " . printable($lock_file) . ": $!") if $exclusive;
 
-# Bound rw below, and a bind needs the file to exist to preserve OAuth token.
-my $creds = "$claude_dir/.credentials.json";
-create_empty($creds) unless -e $creds;
+# The host credentials, bound rw below so a token refresh lands on the host;
+# a bind needs its source to exist.
+my @creds = map { "$config_dir/$_" } @{$agent_spec->{credentials}};
+create_empty($_) for grep { !-e $_ } @creds;
 
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
@@ -828,15 +796,16 @@ bind_ro($_) for @extra_ro;
 try_ro("$project_dir/.git/hooks");
 try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
-bind_ro($proj_claude);
+bind_ro($proj_agent);
 try_tmp_overlay($_) for @worktree_dirs;
-# The session's claude state, at the path claude looks for it. Nothing of the
-# host's is mounted there besides the token below.
-bind_rw($state, $claude_dir);
-bind_rw("$state/.claude.json", $claude_json) unless defined $ENV{CLAUDE_CONFIG_DIR};
-# Has to be rw, because of OAuth token refreshes. After the state bind, so the
-# host's token is what claude finds at that path inside it.
-bind_rw($creds);
+# The session's agent state, at the path the agent looks for it, plus the
+# state files it looks for elsewhere. Nothing of the host's is mounted there
+# besides the credentials below.
+bind_rw($state, $config_dir);
+bind_rw("$state/$_->[0]", $_->[1]) for @state_binds;
+# Have to be rw, because of token refreshes. After the state bind, so the
+# host's token is what the agent finds at that path inside it.
+bind_rw($_) for @creds;
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");
@@ -874,14 +843,14 @@ push @args,
     '--setenv', 'PWD', $project_dir,
     '--setenv', 'TERM', ($ENV{TERM} // 'xterm'),
     '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8');
-push @args, '--setenv', 'CLAUDE_CONFIG_DIR', $claude_dir if defined $ENV{CLAUDE_CONFIG_DIR};
 # Point the toolchains that don't follow XDG at the persistent cache
 push @args,
     '--setenv', 'npm_config_cache', "$home/.cache/npm",
     '--setenv', 'CARGO_HOME',       "$home/.cache/cargo",
     '--setenv', 'GOPATH',           "$home/.cache/go";
-# Agent-specific env from %AGENTS (e.g. claude's sandbox/telemetry hints). Sorted
-# so the constructed argv is deterministic for the tests.
+# The agent module's env (claude's sandbox/telemetry hints, its config-dir
+# variable when the host has one). Sorted so the constructed argv is
+# deterministic for the tests.
 for my $k (sort keys %{$agent_spec->{env}}) {
     push @args, '--setenv', $k, $agent_spec->{env}{$k};
 }
@@ -928,7 +897,7 @@ if ($use_landlock) {
     @payload = ('perl', $landlock_dest, '--', @payload);
 }
 
-# Point claude's clients at the proxy. aye-netns-seal rewrites @@AYE_PROXY@@ to
+# Point the agent's clients at the proxy. aye-netns-seal rewrites @@AYE_PROXY@@ to
 # the real URL inside the netns (only there is the gateway address known), and
 # --clearenv above means these are the only proxy vars the session sees.
 if ($net_filter) {
@@ -1065,7 +1034,7 @@ sub proxy_log_note {
 # Filtered path. aye-buddy becomes a small supervisor: it starts the proxy on
 # the host, launches the sandbox under pasta, waits, restarts the proxy if it
 # dies, and always kills it at the end. Under pasta the chain is
-# pasta -> aye-netns-seal -> bwrap -> claude;
+# pasta -> aye-netns-seal -> bwrap -> agent;
 # aye-netns-seal drops the netns default route, rewrites @@AYE_PROXY@@ to the
 # proxy URL, and arms the seccomp blob itself (pasta need not preserve fds).
 # Never returns: exits with the sandbox's status.
@@ -1101,7 +1070,7 @@ sub launch_filtered {
     #    to arm the blob.
     my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
     # --quiet + log-to-file keep pasta's own diagnostics (the IPv6 "local mode"
-    # notes and friends) off the shared terminal, where they'd clutter claude's TUI.
+    # notes and friends) off the shared terminal, where they'd clutter the agent's TUI.
     # IPv6 is sealed inside the netns by aye-netns-seal (it drops the v6 default
     # route too), not with pasta --ipv4-only — that flag broke pasta's netns setup
     # on some hosts, so we leave pasta's dual-stack default and seal at the routes.

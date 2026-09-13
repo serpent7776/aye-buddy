@@ -13,7 +13,7 @@ my $INSTALL = "$ROOT/install.sh";
 
 # What install.sh should drop in libexec, split by expected mode class.
 my @exec = qw(aye-buddy aye-landlock aye-proxy aye-netns-seal);
-my @data = qw(AyeSeccomp.pm filter.bpf filter-nested.bpf);
+my @data = qw(AyeSeccomp.pm Claude.pl filter.bpf filter-nested.bpf);
 
 sub mode_of { (stat $_[0])[2] & oct('7777') }
 
