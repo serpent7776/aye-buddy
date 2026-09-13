@@ -24,7 +24,7 @@ subtest 'the spec, with the default config dir' => sub {
     is $s->{args}, ['--dangerously-skip-permissions', '--settings', '{"sandbox":{"enabled":false}}'];
     is $s->{env}, { CLAUDE_CODE_SANDBOXED => '1', DISABLE_TELEMETRY => '1',
                     DISABLE_ERROR_REPORTING => '1' }, 'no CLAUDE_CONFIG_DIR unless the host has one';
-    is $s->{reserved_env}, ['CLAUDE_CONFIG_DIR'], 'but the name is reserved either way';
+    is $s->{config_env}, 'CLAUDE_CONFIG_DIR', 'but the name is known either way';
     is $s->{hosts}, ['api.anthropic.com', 'platform.claude.com', 'console.anthropic.com'];
     is $s->{config_dir}, '/h/.claude';
     ok +(grep { $_ eq 'settings.json' } @{ $s->{seed} }), 'settings are seeded';
@@ -43,7 +43,7 @@ subtest 'CLAUDE_CONFIG_DIR moves the config dir' => sub {
     is $s->{config_dir}, '/c', 'as found, for the caller to validate';
     is $s->{env}{CLAUDE_CONFIG_DIR}, '/c', 'forwarded into the session';
     is $s->{state_binds}, [], '.claude.json is inside the dir, no bind of its own';
-    is $s->{reserved_env}, ['CLAUDE_CONFIG_DIR'];
+    is $s->{config_env}, 'CLAUDE_CONFIG_DIR';
     $s = Claude::spec('/h', { CLAUDE_CONFIG_DIR => '' });
     is $s->{config_dir}, '', 'an empty one is passed on, not defaulted';
 };

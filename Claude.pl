@@ -16,8 +16,9 @@ package Claude;
 #   args          fixed arguments, put before the user's own
 #   env           variables set in the session. Their names are refused for
 #                 --keep-env, so a kept host value can't quietly lose to ours.
-#   reserved_env  host variables this layer reads, whether set or not; refused
-#                 for --keep-env for the same reason
+#   config_env    the host variable that relocates config_dir when set. Named
+#                 in the message when the dir it gave fails validation, and
+#                 refused for --keep-env whether set or not, like env.
 #   hosts         the agent's own API hosts, added to the egress allowlist;
 #                 without them the session can't run
 #   config_dir    the host dir holding the agent's config. It is returned as
@@ -82,7 +83,7 @@ sub spec {
             DISABLE_ERROR_REPORTING => '1',
             ($from_env ? (CLAUDE_CONFIG_DIR => $config_dir) : ()),
         },
-        reserved_env => ['CLAUDE_CONFIG_DIR'],
+        config_env => 'CLAUDE_CONFIG_DIR',
         # Claude API and OAuth
         hosts => [qw(api.anthropic.com platform.claude.com console.anthropic.com)],
         config_dir => $config_dir,
