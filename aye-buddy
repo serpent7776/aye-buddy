@@ -95,22 +95,9 @@ sub require_cmd_version {
         or fail("$cmd $m.$n is too old: aye-buddy needs $cmd >= $maj.$min for $why");
 }
 
-# Supported agents. Each entry names the binary to run plus the fixed args and
-# env aye-buddy injects for it; --agent picks one (default claude).
+# Supported agents. Each in it's own module.
 my %AGENTS = (
-    claude => {
-        bin  => 'claude',
-        args => ['--dangerously-skip-permissions',
-                 '--settings', '{"sandbox":{"enabled":false}}'],
-        # Tell claude it's already inside an external sandbox so it skips the
-        # workspace trust dialog (the bwrap boundary is the real trust decision),
-        # and stop non-essential telemetry/error egress at the source.
-        env  => {
-            CLAUDE_CODE_SANDBOXED   => '1',
-            DISABLE_TELEMETRY       => '1',
-            DISABLE_ERROR_REPORTING => '1',
-        },
-    },
+    claude => 'Claude',
 );
 
 sub usage {
@@ -236,9 +223,14 @@ on_path('bwrap') or fail("required command not found on PATH: bwrap");
 
 require_cmd_version('bwrap', 'bubblewrap', 0, 10, 'the worktree overlays');
 
-my $agent_spec = $AGENTS{$agent}
+my $agent_pkg = $AGENTS{$agent}
     or fail("unknown agent: " . printable($agent)
           . " (supported: " . join(', ', sort keys %AGENTS) . ")");
+my $home = validate_dir_env('HOME', $ENV{HOME});
+eval { require "$RealBin/$agent_pkg.pl"; 1 }  ## no critic (RequireBarewordIncludes)
+    or fail("cannot load the $agent agent module: " . ($@ =~ s/\s+\z//r));
+my $agent_spec = ($agent_pkg->can('spec') // fail("$agent_pkg.pl defines no spec"))
+    ->($home, \%ENV);
 on_path($agent_spec->{bin})
     or fail("required command not found on PATH: $agent_spec->{bin}");
 
@@ -299,13 +291,14 @@ sub validate_allow_host {
 # pointers, the toolchain cache redirections (XDG_CACHE_HOME picks the host dir
 # we bind at ~/.cache; kept, it would send every XDG-respecting tool to the
 # tmpfs instead), the Landlock lists, the forwarded agent socket, and whatever
-# the agent entry injects. A --keep-env for one of these would either lose to
-# ours or quietly break the layer it belongs to, so name one and get told rather
-# than guess which won.
+# the agent module injects or reads. A --keep-env for one of these would either
+# lose to ours or quietly break the layer it belongs to, so name one and get
+# told rather than guess which won.
 my %reserved_env = map { $_ => 1 } (
     qw(HOME USER LOGNAME PATH PWD
-       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK CLAUDE_CONFIG_DIR
+       LL_RW LL_RO LL_STRICT LL_VERBOSE SSH_AUTH_SOCK
        XDG_CACHE_HOME npm_config_cache CARGO_HOME GOPATH),
+    $agent_spec->{config_env},
     # Only set when the egress filter is on; without it the session is on the
     # host network and a kept proxy var is the only way to point it at one. The
     # bypass vars go with them: a kept no_proxy=* sends clients around the proxy
@@ -459,8 +452,7 @@ sub validate_dir_env {
     return $val;
 }
 
-my $home = validate_dir_env('HOME', $ENV{HOME});
-my $claude_dir = validate_dir_env('CLAUDE_CONFIG_DIR', $ENV{CLAUDE_CONFIG_DIR} // "$home/.claude");
+my $claude_dir = validate_dir_env($agent_spec->{config_env}, $agent_spec->{config_dir});
 fail(printable($claude_dir) . " is not a directory; the claude state dir must be one")
     if -e $claude_dir && !-d _;
 unless (-e $claude_dir) {
@@ -874,14 +866,14 @@ push @args,
     '--setenv', 'PWD', $project_dir,
     '--setenv', 'TERM', ($ENV{TERM} // 'xterm'),
     '--setenv', 'LANG', ($ENV{LANG} // 'C.UTF-8');
-push @args, '--setenv', 'CLAUDE_CONFIG_DIR', $claude_dir if defined $ENV{CLAUDE_CONFIG_DIR};
 # Point the toolchains that don't follow XDG at the persistent cache
 push @args,
     '--setenv', 'npm_config_cache', "$home/.cache/npm",
     '--setenv', 'CARGO_HOME',       "$home/.cache/cargo",
     '--setenv', 'GOPATH',           "$home/.cache/go";
-# Agent-specific env from %AGENTS (e.g. claude's sandbox/telemetry hints). Sorted
-# so the constructed argv is deterministic for the tests.
+# The agent module's env (claude's sandbox/telemetry hints, its config-dir
+# variable when the host has one). Sorted so the constructed argv is
+# deterministic for the tests.
 for my $k (sort keys %{$agent_spec->{env}}) {
     push @args, '--setenv', $k, $agent_spec->{env}{$k};
 }
