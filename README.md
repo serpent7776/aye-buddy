@@ -90,7 +90,7 @@ than being silently forwarded.
 
 | Flag | Effect |
 | --- | --- |
-| `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today. |
+| `--agent NAME` | Which agent to run (default `claude`). Only `claude` is supported today; an agent is one module beside `aye-buddy` (`Claude.pl` documents the interface) that names its binary, API hosts, config dir and what of it the session gets. |
 | `--bind PATH` | Expose an extra host path (read-write) at the same path inside the sandbox. Repeatable. Paths overlapping `~/.claude` (either direction), the sandbox state root, or under the project's `.claude` are refused — the sandbox mounts its own view of those. |
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
