@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# aye-buddy: run claude in a sandbox.
+# aye-buddy: run a coding agent in a sandbox.
 
 use strict;
 use warnings;
@@ -121,10 +121,10 @@ options:
                             only 443 is allowed (repeatable)
   --keep-env NAME           pass this environment variable through into the
                             session instead of clearing it (repeatable)
-  --reseed                  copy the host claude config (settings, skills,
+  --reseed                  copy the host agent config (settings, skills,
                             plugins, ...) into this project's sandbox state
                             again, replacing the session's copy; transcripts,
-                            memory and .claude.json are kept
+                            memory and the session's own files are kept
   --no-net-filter           turn off egress filtering, use the host network
   --no-lan-filter           let the session reach same-subnet (LAN) hosts
                             directly, around the proxy
@@ -145,16 +145,16 @@ USAGE
 }
 
 # Parse aye-buddy's own options off the front of @ARGV; the rest forwards to
-# claude. require_order stops at the first non-option and pass_through leaves the
-# remainder in @ARGV; no_auto_abbrev/no_ignore_case keep our flags exact-match so
-# a claude arg can't accidentally trigger one (e.g. `--all` is not --allow-bwrap).
+# the agent. require_order stops at the first non-option and pass_through leaves
+# the remainder in @ARGV; no_auto_abbrev/no_ignore_case keep our flags exact-match
+# so an agent arg can't accidentally trigger one (e.g. `--all` is not --allow-bwrap).
 #   --agent NAME selects which agent to run (default claude). NAME must be a key
 #     of %AGENTS above; an unknown one fails rather than reaching bwrap.
-#   --allow-bwrap lets the sandboxed claude run bwrap itself (nested sandboxing):
+#   --allow-bwrap lets the sandboxed agent run bwrap itself (nested sandboxing):
 #     opt-in, it widens the syscall surface and forces Landlock off, leaving the
 #     bwrap mount-namespace allowlist as the only outer wall.
 #   --bind/--bind-ro PATH expose an extra host path at the same path inside the
-#     sandbox (rw/ro). Repeatable. Resolved below so claude never sees them. `:s`
+#     sandbox (rw/ro). Repeatable. Resolved below so the agent never sees them. `:s`
 #     (optional value) so a missing PATH lands as '' we can reject, rather than
 #     swallowing the next flag as the path.
 #   --allow-host HOST[:PORT] adds an extra host to the network egress allowlist
@@ -235,10 +235,10 @@ on_path($agent_spec->{bin})
     or fail("required command not found on PATH: $agent_spec->{bin}");
 
 # pass_through leaves a leading `--` in place; consume it as our separator so a
-# literal `--allow-bwrap` etc. can still reach claude untouched.
+# literal `--allow-bwrap` etc. can still reach the agent untouched.
 my $saw_sep = (@ARGV && $ARGV[0] eq '--') ? do { shift @ARGV; 1 } : 0;
-# Without an explicit `--`, an aye-buddy flag among the leftover claude args is a
-# misplaced flag, not a claude one: fail loudly rather than forward it silently.
+# Without an explicit `--`, an aye-buddy flag among the leftover agent args is a
+# misplaced flag, not the agent's: fail loudly rather than forward it silently.
 if (!$saw_sep) {
     for my $arg (@ARGV) {
         # --bind=PATH is as much ours as --bind PATH, so match on the name only.
@@ -897,7 +897,7 @@ if ($use_landlock) {
     @payload = ('perl', $landlock_dest, '--', @payload);
 }
 
-# Point claude's clients at the proxy. aye-netns-seal rewrites @@AYE_PROXY@@ to
+# Point the agent's clients at the proxy. aye-netns-seal rewrites @@AYE_PROXY@@ to
 # the real URL inside the netns (only there is the gateway address known), and
 # --clearenv above means these are the only proxy vars the session sees.
 if ($net_filter) {
@@ -1034,7 +1034,7 @@ sub proxy_log_note {
 # Filtered path. aye-buddy becomes a small supervisor: it starts the proxy on
 # the host, launches the sandbox under pasta, waits, restarts the proxy if it
 # dies, and always kills it at the end. Under pasta the chain is
-# pasta -> aye-netns-seal -> bwrap -> claude;
+# pasta -> aye-netns-seal -> bwrap -> agent;
 # aye-netns-seal drops the netns default route, rewrites @@AYE_PROXY@@ to the
 # proxy URL, and arms the seccomp blob itself (pasta need not preserve fds).
 # Never returns: exits with the sandbox's status.
@@ -1070,7 +1070,7 @@ sub launch_filtered {
     #    to arm the blob.
     my $blob_arg = $use_seccomp ? $seccomp_blob : '-';
     # --quiet + log-to-file keep pasta's own diagnostics (the IPv6 "local mode"
-    # notes and friends) off the shared terminal, where they'd clutter claude's TUI.
+    # notes and friends) off the shared terminal, where they'd clutter the agent's TUI.
     # IPv6 is sealed inside the netns by aye-netns-seal (it drops the v6 default
     # route too), not with pasta --ipv4-only — that flag broke pasta's netns setup
     # on some hosts, so we leave pasta's dual-stack default and seal at the routes.
