@@ -485,10 +485,11 @@ fail(printable($config_dir) . " is under ~/.cache, which the sandbox binds its o
     if under($config_dir, "$home/.cache");
 
 # Disallow bind mounts under the config dir and at the state files served
-# outside it, where the session's own copies are mounted, and the project
-# .claude, where we use overlayfs.
+# outside it, where the session's own copies are mounted, and the agent's
+# project dir, where we use overlayfs.
 my @state_binds = @{$agent_spec->{state_binds}};   # [state file, session path]
-my $proj_claude = "$project_dir/.claude";
+my $proj_name  = $agent_spec->{project_dir};       # claude: .claude
+my $proj_agent = "$project_dir/$proj_name";
 for my $bind (@extra_rw, @extra_ro) {
     fail(printable($bind) . " overlaps " . printable($config_dir) . ", where the sandbox mounts\n" .
          "  its own copy of the $name state; a bind there would either be covered\n" .
@@ -499,24 +500,27 @@ for my $bind (@extra_rw, @extra_ro) {
              "  its own copy; the bind would be covered by it.")
             if under($at, $bind);
     }
-    for my $f ($proj_claude, Cwd::abs_path($proj_claude) // ()) {
-        fail(printable($bind) . " is under the project's .claude, which the sandbox\n" .
+    for my $f ($proj_agent, Cwd::abs_path($proj_agent) // ()) {
+        fail(printable($bind) . " is under the project's $proj_name, which the sandbox\n" .
              "  covers with its own read-only and throwaway mounts; the bind would\n" .
              "  be shadowed by them.")
             if under($bind, $f);
     }
 }
 
-# The project .claude and the worktree dirs are checked and created here,
+# The agent's project dir and the worktree dirs are checked and created here,
 # before the state dir is seeded, so a refusal leaves no state behind.
-fail(printable($proj_claude) . " is a symlink; binding it read-only would expose its target\n"
-   . "  Make it a real directory to sandbox this project.") if -l $proj_claude;
-unless (-e $proj_claude) {
-    mkdir $proj_claude or fail("cannot create " . printable($proj_claude) . ": $!");
+fail(printable($proj_agent) . " is a symlink; binding it read-only would expose its target\n"
+   . "  Make it a real directory to sandbox this project.") if -l $proj_agent;
+unless (-e $proj_agent) {
+    mkdir $proj_agent or fail("cannot create " . printable($proj_agent) . ": $!");
 }
-fail(printable($proj_claude) . " is not a directory\n"
-   . "  Make it a real directory to sandbox this project.") unless -d $proj_claude;
-my @worktree_dirs = ("$proj_claude/worktrees", "$project_dir/.git/worktrees");
+fail(printable($proj_agent) . " is not a directory\n"
+   . "  Make it a real directory to sandbox this project.") unless -d $proj_agent;
+# The dirs a session may write but the project must not keep (claude: its
+# worktrees), and git's own worktree dir, get throwaway overlays.
+my @worktree_dirs = ((map { "$proj_agent/$_" } @{$agent_spec->{project_overlays}}),
+                     "$project_dir/.git/worktrees");
 for my $wt (@worktree_dirs) {
     fail(printable($wt) . " is a symlink; overlaying it would expose its target") if -l $wt;
     unless (-e $wt) {
@@ -792,7 +796,7 @@ bind_ro($_) for @extra_ro;
 try_ro("$project_dir/.git/hooks");
 try_ro("$project_dir/.git/config");
 try_ro("$project_dir/.git/modules");
-bind_ro($proj_claude);
+bind_ro($proj_agent);
 try_tmp_overlay($_) for @worktree_dirs;
 # The session's agent state, at the path the agent looks for it, plus the
 # state files it looks for elsewhere. Nothing of the host's is mounted there
