@@ -28,6 +28,10 @@ package Claude;
 #                 own is never written.
 #   seed          items under config_dir copied into the state dir on the
 #                 first run, and again on --reseed; a missing one is skipped
+#   live          items under config_dir bound from the host over the state
+#                 dir, read-only, so a host edit is what the session runs; a
+#                 missing one is skipped. Dirs: a file bound stays the inode
+#                 it was, and an editor saves a new one
 #   seed_state    sub($build, $project_dir): run once, on the first seed, with
 #                 the state dir being built and the project root. For what a
 #                 plain copy can't do: here, .claude.json with its project map
@@ -93,7 +97,9 @@ sub spec {
         seed => [qw(settings.json settings.local.json CLAUDE.md mcp.json .mcp.json
                     keybindings.json statusline-command.sh
                     commands agents skills output-styles rules workflows themes
-                    plugins hooks scripts)],
+                    plugins)],
+        # Run by claude, written by the user, on the host: seen live.
+        live => [qw(hooks scripts)],
         seed_state  => sub { seed_claude_json($claude_json, @_) },
         state_files => ['.claude.json', '.credentials.json'],
         # Bound rw because of OAuth token refreshes.

@@ -30,6 +30,8 @@ subtest 'the spec, with the default config dir' => sub {
     ok +(grep { $_ eq 'settings.json' } @{ $s->{seed} }), 'settings are seeded';
     ok !(grep { $_ eq 'projects' } @{ $s->{seed} }), 'transcripts are not';
     ok !(grep { m{/} } @{ $s->{seed} }), 'seed items are names under the config dir';
+    is $s->{live}, ['hooks', 'scripts'], 'hooks and scripts are the host\'s, seen live';
+    ok !(grep { $_ eq 'hooks' || $_ eq 'scripts' } @{ $s->{seed} }), 'and not copied';
     ok ref $s->{seed_state} eq 'CODE', 'a seed hook';
     is $s->{state_files}, ['.claude.json', '.credentials.json'];
     is $s->{credentials}, ['.credentials.json'];

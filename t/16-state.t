@@ -95,13 +95,13 @@ my %host = (
     'home/.claude/rules/r.md'                => 'rule',
     'home/.claude/workflows/w.js'            => 'workflow',
     'home/.claude/themes/t.json'             => 'theme',
-    'home/.claude/hooks/h.sh'                => "#!/bin/sh\n",
+    'home/.claude/skills/one/run.sh'        => "#!/bin/sh\n",
     'home/.claude/history.jsonl'             => 'prompts',
     'home/.claude/projects/-other/x.jsonl'   => 'other transcripts',
     'home/.claude/config.json'               => 'stale credentials',
 );
 subtest 'the host config is copied in, the rest of ~/.claude is not' => sub {
-    my $r = run_aye({ files => \%host, modes => { 'home/.claude/hooks/h.sh' => oct('755') } });
+    my $r = run_aye({ files => \%host, modes => { 'home/.claude/skills/one/run.sh' => oct('755') } });
     is $r->{exit}, 0;
     like $r->{err}, qr/\Aaye-buddy: seeding the sandbox claude state/, 'says so on the first run';
     my $s = state_dir($r);
@@ -112,7 +112,7 @@ subtest 'the host config is copied in, the rest of ~/.claude is not' => sub {
     is slurp("$s/rules/r.md"), 'rule', 'rules copied';
     is slurp("$s/workflows/w.js"), 'workflow', 'workflows copied';
     is slurp("$s/themes/t.json"), 'theme', 'themes copied';
-    is mode("$s/hooks/h.sh"), '0755', 'exec bit kept';
+    is mode("$s/skills/one/run.sh"), '0755', 'exec bit kept';
     ok !-e "$s/$_", "$_ not copied" for qw(history.jsonl projects config.json);
 };
 
@@ -120,18 +120,65 @@ subtest 'the host config is copied in, the rest of ~/.claude is not' => sub {
 # host gained later stays out, until asked for with --reseed.
 subtest 'the copy is made once' => sub {
     my $r = run_aye({ files => { 'home/.claude/settings.json' => 'v1',
-                                 'home/.claude/hooks/h.sh' => 'hook' } });
+                                 'home/.claude/rules/r.md' => 'rule' } });
     is $r->{exit}, 0;
     my $s = state_dir($r);
-    unlink "$s/hooks/h.sh" and rmdir "$s/hooks" or die $!;
+    unlink "$s/rules/r.md" and rmdir "$s/rules" or die $!;
     $r = run_aye({ root => $r->{root}, files => { 'home/.claude/settings.json' => 'v2',
                                                   'home/.claude/CLAUDE.md' => 'new' } });
     is $r->{exit}, 0;
     is state_dir($r), $s, 'the same dir';
     unlike $r->{err}, qr/seeding/, 'no seeding message the second time';
     is slurp("$s/settings.json"), 'v1', 'the session\'s copy is left alone';
-    ok !-e "$s/hooks", 'a dir the session removed stays removed';
+    ok !-e "$s/rules", 'a dir the session removed stays removed';
     ok !-e "$s/CLAUDE.md", 'a file the host gained stays out';
+};
+
+# Hooks and scripts are run by claude and written by the user, on the host:
+# bound from it over the copy, read-only, so an edit there is what the session
+# runs, and a session can't change what a host-side claude runs.
+subtest 'hooks and scripts are bound from the host, read-only, over the state dir' => sub {
+    my $r = run_aye({ files => { 'home/.claude/hooks/h.sh' => 'hook', 'home/.claude/scripts/s.pl' => 'script' } });
+    is $r->{exit}, 0;
+    my $home = setenv_value($r->{argv}, 'HOME');
+    my $s = state_dir($r);
+    ok !-e "$s/$_", "$_ not copied" for qw(hooks scripts);
+    my @a = @{$r->{argv}};
+    my ($state_at) = grep { $a[$_] eq '--bind' && $a[$_ + 2] eq "$home/.claude" } 0 .. $#a - 2;
+    for my $item (qw(hooks scripts)) {
+        my @b = grep { $_->[0] eq "$home/.claude/$item" } bwrap_binds($r->{argv}, '--ro-bind');
+        is \@b, [["$home/.claude/$item", "$home/.claude/$item"]], "$item bound ro at its path";
+        my ($at) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 1] eq "$home/.claude/$item" } 0 .. $#a - 1;
+        ok $at > $state_at, "$item after the state dir, so over it";
+        ok +(grep { $_ eq "$home/.claude/$item" } setenv_list($r->{argv}, 'LL_RO')), "$item in LL_RO";
+    }
+    ok !(grep { $_->[0] =~ m{\A\Q$home\E/\.claude/(hooks|scripts)} } rw_binds($r)), 'never rw';
+};
+
+subtest 'a live item the host lacks is not bound' => sub {
+    my $r = run_aye({ files => { 'home/.claude/hooks/h.sh' => 'hook' } });
+    is $r->{exit}, 0;
+    my $home = setenv_value($r->{argv}, 'HOME');
+    ok !(grep { $_->[0] eq "$home/.claude/scripts" } all_mounts($r)), 'no scripts on the host, no bind';
+};
+
+# The bind follows the link, as the copy does for a seeded item.
+subtest 'a symlinked live item is bound' => sub {
+    my $r = run_aye({ files => { 'dotfiles/scripts/s.pl' => 'x' },
+                      links => { 'home/.claude/scripts' => '../../dotfiles/scripts' } });
+    is $r->{exit}, 0;
+    my $home = setenv_value($r->{argv}, 'HOME');
+    ok +(grep { $_->[0] eq "$home/.claude/scripts" } bwrap_binds($r->{argv}, '--ro-bind')), 'bound';
+};
+
+subtest 'a live item linked into other projects\' state, or dangling, is not bound' => sub {
+    my $r = run_aye({ dirs => ['home/.claude/projects/-other'],
+                      links => { 'home/.claude/hooks' => 'projects/-other', 'home/.claude/scripts' => 'nowhere' } });
+    is $r->{exit}, 0, 'still launches';
+    my $home = setenv_value($r->{argv}, 'HOME');
+    like $r->{err}, qr/warning: not bound: .*hooks points at .*-other,\n  which holds other projects' state/, 'says so';
+    like $r->{err}, qr/warning: not bound: .*scripts is a dangling symlink/, 'and for the dangling one';
+    ok !(grep { $_->[0] =~ m{\A\Q$home\E/\.claude/(hooks|scripts)\z} } all_mounts($r)), 'neither bound';
 };
 
 # A run that dies halfway through the copy must not leave a dir the next run

@@ -653,6 +653,9 @@ my $fresh = !-e $state;
 # lists it. Copied, so the session's edits stay its own. Transcripts, history
 # and everything else are the session's from the start.
 my @seed = @{$agent_spec->{seed}};
+# And what stays the host's: bound from it over the copy, read-only, so an
+# edit there is what the session runs.
+my @live = @{$agent_spec->{live}};
 
 # cp -R -H -p is the copy wanted, and the flags are POSIX: recurse, follow
 # the item itself when it is a symlink, as a dotfiles manager leaves it, keep
@@ -676,18 +679,26 @@ sub links_other_state {
     return;
 }
 
-sub seed_item {
-    my ($item, $dst) = @_;
+# The host's $item when there is one to take: none for a dangling link, or one
+# into other projects' state, each said.
+sub host_item {
+    my ($item, $what) = @_;
     my $src = "$config_dir/$item";
     unless (-e $src) {
-        warning("not seeded: " . printable($src) . " is a dangling symlink") if -l $src;
+        warning("not $what: " . printable($src) . " is a dangling symlink") if -l $src;
         return;
     }
     if (defined(my $real = links_other_state($src))) {
-        warning("not seeded: " . printable($src) . " points at " . printable($real)
+        warning("not $what: " . printable($src) . " points at " . printable($real)
               . ",\n  which holds other projects' state");
         return;
     }
+    return $src;
+}
+
+sub seed_item {
+    my ($item, $dst) = @_;
+    my $src = host_item($item, 'seeded') // return;
     copy_tree($src, $dst);
     return;
 }
@@ -806,10 +817,15 @@ try_ro("$project_dir/.git/modules");
 bind_ro($proj_agent);
 try_tmp_overlay($_) for @worktree_dirs;
 # The session's agent state, at the path the agent looks for it, plus the
-# state files it looks for elsewhere. Nothing of the host's is mounted there
-# besides the credentials below.
+# state files it looks for elsewhere. Of the host's, only the live items and
+# the credentials are mounted there, over it.
 bind_rw($state, $config_dir);
 bind_rw("$state/$_->[0]", $_->[1]) for @state_binds;
+# The live items, over whatever the copy holds at their paths.
+for my $item (@live) {
+    my $src = host_item($item, 'bound') // next;
+    bind_ro($src);
+}
 # Have to be rw, because of token refreshes. After the state bind, so the
 # host's token is what the agent finds at that path inside it.
 bind_rw($_) for @creds;
