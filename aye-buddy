@@ -664,6 +664,18 @@ sub copy_tree {
     return;
 }
 
+# Where a symlink item leads when that is not followed: the config dir's
+# projects/, anything above the config dir, or the state root, all holding
+# other projects' state. Nothing when the item is fine.
+sub links_other_state {
+    my ($src) = @_;
+    -l $src or return;
+    my $real = Cwd::abs_path($src) // return;
+    return $real if under($real, "$config_real/projects") || under($config_real, $real)
+                 || under($real, $state_real) || under($state_real, $real);
+    return;
+}
+
 sub seed_item {
     my ($item, $dst) = @_;
     my $src = "$config_dir/$item";
@@ -671,12 +683,7 @@ sub seed_item {
         warning("not seeded: " . printable($src) . " is a dangling symlink") if -l $src;
         return;
     }
-    # Followed, but not into what holds other projects' state: the config dir's
-    # projects/, anything above the config dir, and the state root.
-    my $real = Cwd::abs_path($src);
-    if (-l $src && defined $real
-        && (under($real, "$config_real/projects") || under($config_real, $real)
-            || under($real, $state_real) || under($state_real, $real))) {
+    if (defined(my $real = links_other_state($src))) {
         warning("not seeded: " . printable($src) . " points at " . printable($real)
               . ",\n  which holds other projects' state");
         return;
