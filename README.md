@@ -147,17 +147,20 @@ On the first run in a project the config a host-side `claude` loads is
 copied in: `settings.json`, `settings.local.json`, `CLAUDE.md`,
 `mcp.json`, `.mcp.json`, `keybindings.json`, `statusline-command.sh`,
 and the `commands/`, `agents/`, `skills/`, `output-styles/`, `rules/`,
-`workflows/`, `themes/`, `plugins/`, `hooks/` and `scripts/` dirs. An
-item that is itself a symlink is followed, as a dotfiles manager leaves
-it; links inside are copied as links.
+`workflows/`, `themes/` and `plugins/` dirs. An item that is itself a
+symlink is followed, as a dotfiles manager leaves it; links inside are
+copied as links.
 `~/.claude.json` is copied with its per-project map cut down to this
 project, since the other entries name every repo you've opened.
+`~/.claude/hooks/` and `~/.claude/scripts/` are not copied but mounted
+from the host, read-only, at the same paths: they are yours, `claude`
+only runs them, so an edit on the host is what the session runs, and a
+session can't change what your host-side `claude` runs.
 Everything else — other projects' transcripts, `history.jsonl`,
 `file-history/` — stays out. That includes a script sitting directly in
 `~/.claude/`: a hook command pointing at `~/.claude/foo.sh` gets ENOENT
 inside the sandbox. Keep such scripts in `~/.claude/hooks/` or
-`~/.claude/scripts/`, which are copied at the same paths and keep
-working.
+`~/.claude/scripts/`.
 
 From then on the dir is the session's. Transcripts, prompt history,
 memory, settings changed with `/effort` or `/config`, an in-session
@@ -386,8 +389,9 @@ secrets out of `--keep-env`.
 - **Host and sandbox state diverge.** A sandboxed session and a host-side
   `claude` in the same repo keep separate transcripts, memory and
   settings: `--continue` and `--resume` in the sandbox see only sandboxed
-  sessions, and the other way round. Host-side config changes need
-  `--reseed`, which discards what a session added to the copied dirs. An
+  sessions, and the other way round. Host-side config changes, other
+  than under `hooks/` and `scripts/`, need `--reseed`, which discards
+  what a session added to the copied dirs. An
   in-session `git worktree add` still vanishes at exit: the checkout under
   `.claude/worktrees/` and its `.git/worktrees/` registration are
   overlays, while the branch and its commits persist in `.git`.
