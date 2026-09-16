@@ -95,7 +95,7 @@ than being silently forwarded.
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--keep-env NAME` | Pass one environment variable through into the session instead of clearing it. Repeatable — see below. |
-| `--reseed` | Copy the host's claude config into this project's sandbox state again, replacing the session's copy of it — see [Claude state](#claude-state). |
+| `--reseed` | Copy the host's settings, skills and plugins into this project's sandbox state again, replacing the session's copy of them — see [Claude state](#claude-state). |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--no-lan-filter` | Let the session reach same-subnet (LAN) hosts directly, around the proxy — see below. |
 | `--allow-reserved` | Let an allowlisted *name* resolve to a loopback or private address. Off by default — see below. |
@@ -119,7 +119,9 @@ aye-buddy's own for this project, mounted at `~/.claude` (see
 mounted over it; and a cache directory of aye-buddy's own (see
 [Caches](#caches)).
 
-**Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git
+**Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); the parts
+of `~/.claude` you write and `claude` only reads or runs, mounted over
+the state dir at their paths (see [Claude state](#claude-state)); your git
 *config* (`~/.gitconfig`, `~/.config/git`) and, only with `--allow-ssh`,
 your SSH *config* (`~/.ssh/config`, `~/.ssh/known_hosts`); the
 project's `.git/hooks`, `.git/config`, `.git/modules` and its `.claude/`
@@ -136,8 +138,8 @@ branch, which live in the shared `.git`.
 
 ### Claude state
 
-The host's `~/.claude` is never mounted. The session gets a state dir of
-aye-buddy's own instead, one per project and agent, under
+The host's `~/.claude` is never mounted whole. The session gets a state
+dir of aye-buddy's own instead, one per project and agent, under
 `~/.local/state/aye-buddy/claude/` (`XDG_STATE_HOME` honoured), named
 after the project path: `/` becomes `-`, `-` becomes `__` and `_`
 becomes `_-`, so `/home/me/src/my-app` is `-home-me-src-my__app`. It is
@@ -172,11 +174,16 @@ this project, and none of it is read by a host-side `claude`. The copy
 is not refreshed. A setting, skill or plugin you change on the host
 reaches a project's sandbox only with `--reseed`, which replaces the
 copied items — a session's additions inside them go with it — and keeps
-the rest. It refuses to run while a session is up in that project, and
-a session refuses to start while a reseed is in progress.
+the rest. It also clears whatever sits in the state dir where a host
+item is mounted over it, which shows only once you remove that item on
+the host: a copy made before it was mounted, or the empty mount point
+bwrap leaves. A session that left a file, dir or link of the wrong kind
+there is refused at the next start, naming `--reseed`. It refuses to
+run while a session is up in that project, and a session refuses to
+start while a reseed is in progress.
 
-Only the credentials file is shared: the host's is mounted over the
-state dir's copy, so one login serves both sides.
+Only the credentials file is written on both sides: the host's is
+mounted over the state dir's copy, so one login serves both.
 
 `CLAUDE_CONFIG_DIR` is honoured: with it set, the state dir is seeded
 from and mounted at that directory instead, `~/.claude.json` lives inside
@@ -394,7 +401,9 @@ secrets out of `--keep-env`.
   settings: `--continue` and `--resume` in the sandbox see only sandboxed
   sessions, and the other way round. A host-side change to settings,
   skills or plugins needs `--reseed`, which discards what a session
-  added to the copied dirs; the rest of the config is mounted live. An
+  added to the copied dirs; the rest of the config is mounted live, and
+  read-only, so `/agents`, `/output-style:new`, `#` into the user
+  `CLAUDE.md` and the like fail in-session: make those on the host. An
   in-session `git worktree add` still vanishes at exit: the checkout under
   `.claude/worktrees/` and its `.git/worktrees/` registration are
   overlays, while the branch and its commits persist in `.git`.
