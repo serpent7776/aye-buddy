@@ -399,14 +399,26 @@ secrets out of `--keep-env`.
 - **Host and sandbox state diverge.** A sandboxed session and a host-side
   `claude` in the same repo keep separate transcripts, memory and
   settings: `--continue` and `--resume` in the sandbox see only sandboxed
-  sessions, and the other way round. A host-side change to settings,
-  skills or plugins needs `--reseed`, which discards what a session
-  added to the copied dirs; the rest of the config is mounted live, and
-  read-only, so `/agents`, `/output-style:new`, `#` into the user
-  `CLAUDE.md` and the like fail in-session: make those on the host. An
-  in-session `git worktree add` still vanishes at exit: the checkout under
-  `.claude/worktrees/` and its `.git/worktrees/` registration are
-  overlays, while the branch and its commits persist in `.git`.
+  sessions, and the other way round. Memory the host-side `claude` built up
+  before a project moved into the sandbox is not carried over: copy it
+  by hand, once, into the same place under the state dir, where the
+  sandboxed `claude` names the project as the host one does:
+
+  ```sh
+  s=~/.local/state/aye-buddy/claude/<state dir>/projects/<slug>
+  mkdir -p $s && cp -R ~/.claude/projects/<slug>/memory $s/
+  ```
+
+  `<slug>` is the dir claude made under `~/.claude/projects/`, and the
+  state dir is named in [Claude state](#claude-state) and printed when
+  it is seeded. A host-side change to settings, skills or plugins needs
+  `--reseed`, which discards what a session added to the copied dirs;
+  the rest of the config is mounted live, and read-only, so `/agents`,
+  `/output-style:new`, `#` into the user `CLAUDE.md` and the like fail
+  in-session: make those on the host. An in-session `git worktree add`
+  still vanishes at exit: the checkout under `.claude/worktrees/` and its
+  `.git/worktrees/` registration are overlays, while the branch and its
+  commits persist in `.git`.
 - **The credentials file is readable *and* writable in-session.** `claude`
   needs the OAuth token and has to be able to rewrite it on refresh, so the
   file is bound read-write; a payload runs under the same uid, so it can read
