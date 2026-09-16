@@ -27,12 +27,18 @@ subtest 'the spec, with the default config dir' => sub {
     is $s->{config_env}, 'CLAUDE_CONFIG_DIR', 'but the name is known either way';
     is $s->{hosts}, ['api.anthropic.com', 'platform.claude.com', 'console.anthropic.com'];
     is $s->{config_dir}, '/h/.claude';
-    ok +(grep { $_ eq 'settings.json' } @{ $s->{seed} }), 'settings are seeded';
-    ok !(grep { $_ eq 'projects' } @{ $s->{seed} }), 'transcripts are not';
-    ok !(grep { m{/} } @{ $s->{seed} }), 'seed items are names under the config dir';
+    is $s->{seed}, [qw(settings.json settings.local.json skills plugins)],
+        'what a session writes is copied';
+    is $s->{bind_ro}, [qw(CLAUDE.md mcp.json .mcp.json keybindings.json statusline-command.sh
+                          commands agents output-styles rules workflows themes hooks scripts)],
+        'what the user writes is the host\'s, bound read-only';
+    ok !(grep { $_ eq 'projects' } @{ $s->{seed} }, @{ $s->{bind_ro} }), 'transcripts are neither';
+    ok !(grep { m{/} } @{ $s->{seed} }, @{ $s->{bind_ro} }), 'items are names under the config dir';
+    my %seeded = map { $_ => 1 } @{ $s->{seed} };
+    ok !(grep { $seeded{$_} } @{ $s->{bind_ro} }), 'no item is both copied and bound over';
     ok ref $s->{seed_state} eq 'CODE', 'a seed hook';
     is $s->{state_files}, ['.claude.json', '.credentials.json'];
-    is $s->{credentials}, ['.credentials.json'];
+    is $s->{bind_rw}, ['.credentials.json'], 'the token is bound rw';
     is $s->{state_binds}, [['.claude.json', '/h/.claude.json']], '.claude.json is served beside the dir';
     is $s->{project_dir}, '.claude';
     is $s->{project_overlays}, ['worktrees'];
@@ -119,7 +125,10 @@ subtest 'with CLAUDE_CONFIG_DIR the seed reads .claude.json from there' => sub {
 
 # What aye-buddy builds from the module's answers.
 subtest 'the module agrees with aye-buddy' => sub {
-    my $r = run_aye({ env => { AYE_BUDDY_DEBUG => 1 } }, '-p', 'hi');
+    # Every item bound from the host present there, as a dir: the stub bwrap
+    # doesn't care, and the launcher binds whatever exists
+    my @ro = @{ Claude::spec('/h', {})->{bind_ro} };
+    my $r = run_aye({ env => { AYE_BUDDY_DEBUG => 1 }, dirs => [map { "home/.claude/$_" } @ro] }, '-p', 'hi');
     is $r->{exit}, 0;
     my @a = @{ $r->{argv} };
     my $home = setenv_value(\@a, 'HOME');
@@ -134,11 +143,17 @@ subtest 'the module agrees with aye-buddy' => sub {
         'the state dir is mounted at config_dir';
     my ($st) = grep { $a[$_] eq '--bind' && $a[$_ + 2] eq $s->{config_dir} } 0 .. $#a - 2;
     ok defined $st, 'at config_dir';
-    for my $c (@{ $s->{credentials} }) {
+    for my $c (@{ $s->{bind_rw} }) {
         my $f = "$s->{config_dir}/$c";
         ok -e $f, "$c created on the host";
         my ($cr) = grep { $a[$_] eq '--bind' && $a[$_ + 1] eq $f && $a[$_ + 2] eq $f } 0 .. $#a - 2;
         ok(defined $cr && $cr > $st, "$c bound rw after the state dir");
+    }
+    for my $c (@{ $s->{bind_ro} }) {
+        my $p = "$s->{config_dir}/$c";
+        my ($ro) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 1] eq $p && $a[$_ + 2] eq $p } 0 .. $#a - 2;
+        ok(defined $ro && $ro > $st, "$c bound ro after the state dir");
+        ok !-e state_dir($r) . "/$c", "$c not copied";
     }
     for my $b (@{ $s->{state_binds} }) {
         my ($file, $at) = @$b;

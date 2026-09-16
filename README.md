@@ -95,7 +95,7 @@ than being silently forwarded.
 | `--bind-ro PATH` | Same, read-only. Repeatable. |
 | `--allow-host HOST[:PORT]` | Add one host to the network allowlist, matched exactly; `.HOST` covers its subdomains too. Port-less allows 443; `:PORT` allows exactly that port. Repeatable. |
 | `--keep-env NAME` | Pass one environment variable through into the session instead of clearing it. Repeatable — see below. |
-| `--reseed` | Copy the host's claude config into this project's sandbox state again, replacing the session's copy of it — see [Claude state](#claude-state). |
+| `--reseed` | Copy the host's settings, skills and plugins into this project's sandbox state again, replacing the session's copy of them — see [Claude state](#claude-state). |
 | `--no-net-filter` | Turn off egress filtering and use the host network directly. |
 | `--no-lan-filter` | Let the session reach same-subnet (LAN) hosts directly, around the proxy — see below. |
 | `--allow-reserved` | Let an allowlisted *name* resolve to a loopback or private address. Off by default — see below. |
@@ -119,7 +119,9 @@ aye-buddy's own for this project, mounted at `~/.claude` (see
 mounted over it; and a cache directory of aye-buddy's own (see
 [Caches](#caches)).
 
-**Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); your git
+**Read-only:** system dirs (`/usr`, `/etc`, `/opt`, `/nix`); the parts
+of `~/.claude` you write and `claude` only reads or runs, mounted over
+the state dir at their paths (see [Claude state](#claude-state)); your git
 *config* (`~/.gitconfig`, `~/.config/git`) and, only with `--allow-ssh`,
 your SSH *config* (`~/.ssh/config`, `~/.ssh/known_hosts`); the
 project's `.git/hooks`, `.git/config`, `.git/modules` and its `.claude/`
@@ -136,41 +138,52 @@ branch, which live in the shared `.git`.
 
 ### Claude state
 
-The host's `~/.claude` is never mounted. The session gets a state dir of
-aye-buddy's own instead, one per project and agent, under
+The host's `~/.claude` is never mounted whole. The session gets a state
+dir of aye-buddy's own instead, one per project and agent, under
 `~/.local/state/aye-buddy/claude/` (`XDG_STATE_HOME` honoured), named
 after the project path: `/` becomes `-`, `-` becomes `__` and `_`
 becomes `_-`, so `/home/me/src/my-app` is `-home-me-src-my__app`. It is
 mounted at `~/.claude`, and `~/.claude.json` is served from it too.
 
-On the first run in a project the config a host-side `claude` loads is
-copied in: `settings.json`, `settings.local.json`, `CLAUDE.md`,
-`mcp.json`, `.mcp.json`, `keybindings.json`, `statusline-command.sh`,
-and the `commands/`, `agents/`, `skills/`, `output-styles/`, `rules/`,
-`workflows/`, `themes/`, `plugins/`, `hooks/` and `scripts/` dirs. An
-item that is itself a symlink is followed, as a dotfiles manager leaves
-it; links inside are copied as links.
-`~/.claude.json` is copied with its per-project map cut down to this
-project, since the other entries name every repo you've opened.
+The config a host-side `claude` loads is split by who writes it. What a
+session writes is copied in on the first run in a project, so its edits
+stay its own: `settings.json`, `settings.local.json`, and the `skills/`
+and `plugins/` dirs. `~/.claude.json` is copied with its per-project map
+cut down to this project, since the other entries name every repo
+you've opened. What you write and `claude` only reads or runs is
+mounted from the host, read-only, at the same paths, so an edit on the
+host is what the session runs, and a session can't change what your
+host-side `claude` runs: `CLAUDE.md`, `mcp.json`, `.mcp.json`,
+`keybindings.json`, `statusline-command.sh`, and the `commands/`,
+`agents/`, `output-styles/`, `rules/`, `workflows/`, `themes/`,
+`hooks/` and `scripts/` dirs. A dir's edits show at once; a file an
+editor replaces while a session runs reads as before in that session,
+and as saved in the next. An item that is itself a symlink is followed,
+as a dotfiles manager leaves it; links inside a copied one are copied
+as links.
 Everything else — other projects' transcripts, `history.jsonl`,
 `file-history/` — stays out. That includes a script sitting directly in
 `~/.claude/`: a hook command pointing at `~/.claude/foo.sh` gets ENOENT
 inside the sandbox. Keep such scripts in `~/.claude/hooks/` or
-`~/.claude/scripts/`, which are copied at the same paths and keep
-working.
+`~/.claude/scripts/`.
 
-From then on the dir is the session's. Transcripts, prompt history,
-memory, settings changed with `/effort` or `/config`, an in-session
-plugin install: all of it persists across runs of this project, and none
-of it is read by a host-side `claude`. The copy is not refreshed. A skill
-or setting you change on the host reaches a project's sandbox only with
-`--reseed`, which replaces the copied items — a session's additions
-inside them go with it — and keeps the rest. It refuses to run while a
-session is up in that project, and a session refuses to start while a
-reseed is in progress.
+From then on the copied part is the session's. Transcripts, prompt
+history, memory, settings changed with `/effort` or `/config`, an
+in-session plugin or skill install: all of it persists across runs of
+this project, and none of it is read by a host-side `claude`. The copy
+is not refreshed. A setting, skill or plugin you change on the host
+reaches a project's sandbox only with `--reseed`, which replaces the
+copied items — a session's additions inside them go with it — and keeps
+the rest. It also clears whatever sits in the state dir where a host
+item is mounted over it, which shows only once you remove that item on
+the host: a copy made before it was mounted, or the empty mount point
+bwrap leaves. A session that left a file, dir or link of the wrong kind
+there is refused at the next start, naming `--reseed`. It refuses to
+run while a session is up in that project, and a session refuses to
+start while a reseed is in progress.
 
-Only the credentials file is shared: the host's is mounted over the
-state dir's copy, so one login serves both sides.
+Only the credentials file is written on both sides: the host's is
+mounted over the state dir's copy, so one login serves both.
 
 `CLAUDE_CONFIG_DIR` is honoured: with it set, the state dir is seeded
 from and mounted at that directory instead, `~/.claude.json` lives inside
@@ -386,11 +399,26 @@ secrets out of `--keep-env`.
 - **Host and sandbox state diverge.** A sandboxed session and a host-side
   `claude` in the same repo keep separate transcripts, memory and
   settings: `--continue` and `--resume` in the sandbox see only sandboxed
-  sessions, and the other way round. Host-side config changes need
-  `--reseed`, which discards what a session added to the copied dirs. An
-  in-session `git worktree add` still vanishes at exit: the checkout under
-  `.claude/worktrees/` and its `.git/worktrees/` registration are
-  overlays, while the branch and its commits persist in `.git`.
+  sessions, and the other way round. Memory the host-side `claude` built up
+  before a project moved into the sandbox is not carried over: copy it
+  by hand, once, into the same place under the state dir, where the
+  sandboxed `claude` names the project as the host one does:
+
+  ```sh
+  s=~/.local/state/aye-buddy/claude/<state dir>/projects/<slug>
+  mkdir -p $s && cp -R ~/.claude/projects/<slug>/memory $s/
+  ```
+
+  `<slug>` is the dir claude made under `~/.claude/projects/`, and the
+  state dir is named in [Claude state](#claude-state) and printed when
+  it is seeded. A host-side change to settings, skills or plugins needs
+  `--reseed`, which discards what a session added to the copied dirs;
+  the rest of the config is mounted live, and read-only, so `/agents`,
+  `/output-style:new`, `#` into the user `CLAUDE.md` and the like fail
+  in-session: make those on the host. An in-session `git worktree add`
+  still vanishes at exit: the checkout under `.claude/worktrees/` and its
+  `.git/worktrees/` registration are overlays, while the branch and its
+  commits persist in `.git`.
 - **The credentials file is readable *and* writable in-session.** `claude`
   needs the OAuth token and has to be able to rewrite it on refresh, so the
   file is bound read-write; a payload runs under the same uid, so it can read

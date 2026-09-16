@@ -84,35 +84,29 @@ subtest 'a relative XDG_STATE_HOME is ignored' => sub {
     like state_dir($r), qr{/home/\.local/state/aye-buddy/claude/}, 'the default is used';
 };
 
-# What a host-side claude loads comes over as a copy, so the session's edits
-# are its own. Transcripts, history and the like are the host's business and
-# other projects' secrets, and stay out.
+# What a session writes of a host-side claude's config comes over as a copy,
+# so its edits are its own. Transcripts, history and the like are the host's
+# business and other projects' secrets, and stay out.
 my %host = (
     'home/.claude/settings.json'             => '{"a":1}',
-    'home/.claude/CLAUDE.md'                 => 'rules',
+    'home/.claude/settings.local.json'       => '{"b":1}',
     'home/.claude/skills/one/SKILL.md'       => 'skill',
-    'home/.claude/keybindings.json'          => '{"k":1}',
-    'home/.claude/rules/r.md'                => 'rule',
-    'home/.claude/workflows/w.js'            => 'workflow',
-    'home/.claude/themes/t.json'             => 'theme',
-    'home/.claude/hooks/h.sh'                => "#!/bin/sh\n",
+    'home/.claude/skills/one/run.sh'         => "#!/bin/sh\n",
+    'home/.claude/plugins/p/x'               => 'plugin',
     'home/.claude/history.jsonl'             => 'prompts',
     'home/.claude/projects/-other/x.jsonl'   => 'other transcripts',
     'home/.claude/config.json'               => 'stale credentials',
 );
-subtest 'the host config is copied in, the rest of ~/.claude is not' => sub {
-    my $r = run_aye({ files => \%host, modes => { 'home/.claude/hooks/h.sh' => oct('755') } });
+subtest 'the host config a session writes is copied in, the rest of ~/.claude is not' => sub {
+    my $r = run_aye({ files => \%host, modes => { 'home/.claude/skills/one/run.sh' => oct('755') } });
     is $r->{exit}, 0;
     like $r->{err}, qr/\Aaye-buddy: seeding the sandbox claude state/, 'says so on the first run';
     my $s = state_dir($r);
     is slurp("$s/settings.json"), '{"a":1}', 'settings copied';
-    is slurp("$s/CLAUDE.md"), 'rules', 'CLAUDE.md copied';
+    is slurp("$s/settings.local.json"), '{"b":1}', 'local settings copied';
     is slurp("$s/skills/one/SKILL.md"), 'skill', 'skills copied, whole';
-    is slurp("$s/keybindings.json"), '{"k":1}', 'keybindings copied';
-    is slurp("$s/rules/r.md"), 'rule', 'rules copied';
-    is slurp("$s/workflows/w.js"), 'workflow', 'workflows copied';
-    is slurp("$s/themes/t.json"), 'theme', 'themes copied';
-    is mode("$s/hooks/h.sh"), '0755', 'exec bit kept';
+    is slurp("$s/plugins/p/x"), 'plugin', 'plugins copied';
+    is mode("$s/skills/one/run.sh"), '0755', 'exec bit kept';
     ok !-e "$s/$_", "$_ not copied" for qw(history.jsonl projects config.json);
 };
 
@@ -120,18 +114,95 @@ subtest 'the host config is copied in, the rest of ~/.claude is not' => sub {
 # host gained later stays out, until asked for with --reseed.
 subtest 'the copy is made once' => sub {
     my $r = run_aye({ files => { 'home/.claude/settings.json' => 'v1',
-                                 'home/.claude/hooks/h.sh' => 'hook' } });
+                                 'home/.claude/plugins/p/x' => 'plugin' } });
     is $r->{exit}, 0;
     my $s = state_dir($r);
-    unlink "$s/hooks/h.sh" and rmdir "$s/hooks" or die $!;
+    unlink "$s/plugins/p/x" and rmdir "$s/plugins/p" and rmdir "$s/plugins" or die $!;
     $r = run_aye({ root => $r->{root}, files => { 'home/.claude/settings.json' => 'v2',
-                                                  'home/.claude/CLAUDE.md' => 'new' } });
+                                                  'home/.claude/settings.local.json' => 'new' } });
     is $r->{exit}, 0;
     is state_dir($r), $s, 'the same dir';
     unlike $r->{err}, qr/seeding/, 'no seeding message the second time';
     is slurp("$s/settings.json"), 'v1', 'the session\'s copy is left alone';
-    ok !-e "$s/hooks", 'a dir the session removed stays removed';
-    ok !-e "$s/CLAUDE.md", 'a file the host gained stays out';
+    ok !-e "$s/plugins", 'a dir the session removed stays removed';
+    ok !-e "$s/settings.local.json", 'a file the host gained stays out';
+};
+
+# What the user writes and claude only reads or runs, CLAUDE.md, hooks,
+# scripts and the rest, is bound from the host over the copy, read-only, so
+# an edit there is what the session runs, and a session can't change what a
+# host-side claude runs.
+subtest 'the config the user writes is bound from the host, read-only, over the state dir' => sub {
+    my $r = run_aye({ files => { 'home/.claude/hooks/h.sh' => 'hook', 'home/.claude/scripts/s.pl' => 'script',
+                                 'home/.claude/CLAUDE.md' => 'rules' } });
+    is $r->{exit}, 0;
+    my $home = setenv_value($r->{argv}, 'HOME');
+    my $s = state_dir($r);
+    ok !-e "$s/$_", "$_ not copied" for qw(hooks scripts CLAUDE.md);
+    my @a = @{$r->{argv}};
+    my ($state_at) = grep { $a[$_] eq '--bind' && $a[$_ + 2] eq "$home/.claude" } 0 .. $#a - 2;
+    for my $item (qw(hooks scripts CLAUDE.md)) {
+        my @b = grep { $_->[0] eq "$home/.claude/$item" } bwrap_binds($r->{argv}, '--ro-bind');
+        is \@b, [["$home/.claude/$item", "$home/.claude/$item"]], "$item bound ro at its path";
+        my ($at) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 1] eq "$home/.claude/$item" } 0 .. $#a - 1;
+        ok $at > $state_at, "$item after the state dir, so over it";
+        ok +(grep { $_ eq "$home/.claude/$item" } setenv_list($r->{argv}, 'LL_RO')), "$item in LL_RO";
+    }
+    ok !(grep { $_->[0] =~ m{\A\Q$home\E/\.claude/(hooks|scripts|CLAUDE\.md)} } rw_binds($r)), 'never rw';
+};
+
+subtest 'an item bound read-only the host lacks is not bound' => sub {
+    my $r = run_aye({ files => { 'home/.claude/hooks/h.sh' => 'hook' } });
+    is $r->{exit}, 0;
+    my $home = setenv_value($r->{argv}, 'HOME');
+    ok !(grep { $_->[0] eq "$home/.claude/scripts" } all_mounts($r)), 'no scripts on the host, no bind';
+};
+
+# The bind follows the link, as the copy does for a seeded item.
+subtest 'a symlinked read-only item is bound' => sub {
+    my $r = run_aye({ files => { 'dotfiles/scripts/s.pl' => 'x' },
+                      links => { 'home/.claude/scripts' => '../../dotfiles/scripts' } });
+    is $r->{exit}, 0;
+    my $home = setenv_value($r->{argv}, 'HOME');
+    ok +(grep { $_->[0] eq "$home/.claude/scripts" } bwrap_binds($r->{argv}, '--ro-bind')), 'bound';
+};
+
+subtest 'an item bound read-only linked into other projects\' state, or dangling, is not bound' => sub {
+    my $r = run_aye({ dirs => ['home/.claude/projects/-other'],
+                      links => { 'home/.claude/hooks' => 'projects/-other', 'home/.claude/scripts' => 'nowhere' } });
+    is $r->{exit}, 0, 'still launches';
+    my $home = setenv_value($r->{argv}, 'HOME');
+    like $r->{err}, qr/warning: not bound: .*hooks points at .*-other,\n  which holds other projects' state/, 'says so';
+    like $r->{err}, qr/warning: not bound: .*scripts is a dangling symlink/, 'and for the dangling one';
+    ok !(grep { $_->[0] =~ m{\A\Q$home\E/\.claude/(hooks|scripts)\z} } all_mounts($r)), 'neither bound';
+};
+
+# bwrap can't mount a dir over a file or the reverse, and follows a link at
+# the mount point; a session can leave any of those where the host's item is
+# bound, and the start would die in bwrap with nothing said.
+subtest 'a mount point of the other kind, or a link, where a host item is bound is refused' => sub {
+    my @cases = (
+        ['scripts',   sub { open my $fh, '>', shift or die $!; close $fh }, 'home/.claude/scripts/s.pl',
+         qr/scripts is a file where the host's is a directory; --reseed removes it/],
+        ['CLAUDE.md', sub { mkdir shift or die $! },                        'home/.claude/CLAUDE.md',
+         qr/CLAUDE\.md is a directory where the host's is a file; --reseed removes it/],
+        ['hooks',     sub { symlink 'projects', shift or die $! },          'home/.claude/hooks/h.sh',
+         qr/hooks is a symlink; --reseed removes it/],
+    );
+    for my $case (@cases) {
+        my ($item, $leave, $host_file, $why) = @$case;
+        my $r = run_aye({ files => { 'home/.claude/settings.json' => 'v1' } });
+        is $r->{exit}, 0, "$item: a first run";
+        my $s = state_dir($r);
+        $leave->("$s/$item");
+        $r = run_aye({ root => $r->{root}, files => { $host_file => 'x' } });
+        is $r->{exit}, 1, "$item: exits 1 once the host has the item";
+        like $r->{err}, qr/aye-buddy: .*$why/, "$item: says why";
+        is $r->{argv}, [], "$item: bwrap never invoked";
+        $r = run_aye({ root => $r->{root} }, '--reseed');
+        is $r->{exit}, 0, "$item: --reseed clears it";
+        ok !-e "$s/$item" && !-l "$s/$item", "$item: gone";
+    }
 };
 
 # A run that dies halfway through the copy must not leave a dir the next run
@@ -173,7 +244,7 @@ subtest 'a project whose path ends like the build or lock name keeps its state' 
 
 subtest '--reseed replaces the host-config part and keeps the session\'s own' => sub {
     my $r = run_aye({ files => { 'home/.claude/settings.json' => 'v1',
-                                 'home/.claude/CLAUDE.md' => 'rules',
+                                 'home/.claude/settings.local.json' => 'local',
                                  'home/.claude/skills/one/SKILL.md' => 'skill',
                                  'home/.claude/.claude.json' => 'x' } });
     is $r->{exit}, 0;
@@ -183,12 +254,19 @@ subtest '--reseed replaces the host-config part and keeps the session\'s own' =>
     mkdir "$s/skills/mine" or die $!;
     open my $fh, '>', "$s/skills/mine/SKILL.md" or die $!; print $fh 'made in-session'; close $fh;
     open $fh, '>', "$s/.claude.json" or die $!; print $fh '{"session":1}'; close $fh;
-    unlink "$r->{root}/home/.claude/CLAUDE.md" or die $!;
+    # A copy of hooks/ from before it was bound from the host, and the mount
+    # point bwrap makes for a file item; both show once the host drops the item
+    mkdir "$s/hooks" or die $!;
+    open $fh, '>', "$s/hooks/h.sh" or die $!; print $fh 'old'; close $fh;
+    open $fh, '>', "$s/keybindings.json" or die $!; close $fh;
+    unlink "$r->{root}/home/.claude/settings.local.json" or die $!;
     $r = run_aye({ root => $r->{root}, files => { 'home/.claude/settings.json' => 'v2' } }, '--reseed');
     is $r->{exit}, 0;
     like $r->{err}, qr/\Aaye-buddy: reseeding the sandbox claude state/, 'says so';
     is slurp("$s/settings.json"), 'v2', 'settings replaced';
-    ok !-e "$s/CLAUDE.md", 'a file gone from the host is gone here';
+    ok !-e "$s/settings.local.json", 'a file gone from the host is gone here';
+    ok !-e "$s/hooks", 'an old copy at a bound path is removed';
+    ok !-e "$s/keybindings.json", 'a mount point too';
     ok !-e "$s/skills/mine", 'a session-made skill goes with its dir';
     is slurp("$s/skills/one/SKILL.md"), 'skill', 'the host one is back';
     ok -d "$s/projects", 'transcripts kept';
@@ -242,10 +320,10 @@ subtest 'a symlinked host config dir is copied as a real one' => sub {
 };
 
 subtest 'a dangling symlink is skipped with a warning' => sub {
-    my $r = run_aye({ links => { 'home/.claude/CLAUDE.md' => 'nowhere' } });
+    my $r = run_aye({ links => { 'home/.claude/skills' => 'nowhere' } });
     is $r->{exit}, 0, 'still launches';
-    like $r->{err}, qr/warning: not seeded: .*CLAUDE\.md is a dangling symlink/, 'says which';
-    ok !-e state_dir($r) . '/CLAUDE.md', 'and nothing is there';
+    like $r->{err}, qr/warning: not seeded: .*skills is a dangling symlink/, 'says which';
+    ok !-e state_dir($r) . '/skills', 'and nothing is there';
 };
 
 # Below the item, links are copied as links: following them would let a link

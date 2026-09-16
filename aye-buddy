@@ -179,9 +179,10 @@ USAGE
 #     and known_hosts, ro. Opt-in because an agent can't scope a signature to one
 #     destination: the session can have the host agent authenticate to anything
 #     it can reach, for the session's lifetime.
-#   --reseed replaces the host-config part of this project's sandbox state with
-#     a fresh copy from the host. The copy is made once otherwise, so host-side
-#     edits don't reach a project's sandbox until asked for.
+#   --reseed replaces the copied part of this project's sandbox state with a
+#     fresh copy from the host. The copy is made once otherwise, so a host-side
+#     edit to it doesn't reach a project's sandbox until asked for; the rest of
+#     the config is bound from the host and needs no asking.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
@@ -653,6 +654,9 @@ my $fresh = !-e $state;
 # lists it. Copied, so the session's edits stay its own. Transcripts, history
 # and everything else are the session's from the start.
 my @seed = @{$agent_spec->{seed}};
+# And what stays the host's: bound from it over the copy, read-only, so an
+# edit there is what the session runs.
+my @host_ro = @{$agent_spec->{bind_ro}};
 
 # cp -R -H -p is the copy wanted, and the flags are POSIX: recurse, follow
 # the item itself when it is a symlink, as a dotfiles manager leaves it, keep
@@ -664,23 +668,38 @@ sub copy_tree {
     return;
 }
 
-sub seed_item {
-    my ($item, $dst) = @_;
+# Where a symlink item leads when that is not followed: the config dir's
+# projects/, anything above the config dir, or the state root, all holding
+# other projects' state. Nothing when the item is fine.
+sub links_other_state {
+    my ($src) = @_;
+    -l $src or return;
+    my $real = Cwd::abs_path($src) // return;
+    return $real if under($real, "$config_real/projects") || under($config_real, $real)
+                 || under($real, $state_real) || under($state_real, $real);
+    return;
+}
+
+# The host's $item when there is one to take: none for a dangling link, or one
+# into other projects' state, each said.
+sub host_item {
+    my ($item, $what) = @_;
     my $src = "$config_dir/$item";
     unless (-e $src) {
-        warning("not seeded: " . printable($src) . " is a dangling symlink") if -l $src;
+        warning("not $what: " . printable($src) . " is a dangling symlink") if -l $src;
         return;
     }
-    # Followed, but not into what holds other projects' state: the config dir's
-    # projects/, anything above the config dir, and the state root.
-    my $real = Cwd::abs_path($src);
-    if (-l $src && defined $real
-        && (under($real, "$config_real/projects") || under($config_real, $real)
-            || under($real, $state_real) || under($state_real, $real))) {
-        warning("not seeded: " . printable($src) . " points at " . printable($real)
+    if (defined(my $real = links_other_state($src))) {
+        warning("not $what: " . printable($src) . " points at " . printable($real)
               . ",\n  which holds other projects' state");
         return;
     }
+    return $src;
+}
+
+sub seed_item {
+    my ($item, $dst) = @_;
+    my $src = host_item($item, 'seeded') // return;
     copy_tree($src, $dst);
     return;
 }
@@ -737,6 +756,9 @@ else {
                 or fail("cannot rename " . printable("$stage/$item") . " into place: $!");
         }
         rmdir $stage or fail("cannot remove " . printable($stage) . ": $!");
+        # What sits where the host's are bound: a copy from before they were,
+        # or the mount point bwrap made. Seen only once the host drops the item.
+        remove_path("$state/$_") for @host_ro;
     }
     for my $f (map { "$state/$_" } @{$agent_spec->{state_files}}) {
         fail(printable($f) . " is a symlink; binding it would expose its target") if -l $f;
@@ -749,8 +771,8 @@ flock($lock_fh, LOCK_SH) or fail("cannot re-lock " . printable($lock_file) . ": 
 
 # The host credentials, bound rw below so a token refresh lands on the host;
 # a bind needs its source to exist.
-my @creds = map { "$config_dir/$_" } @{$agent_spec->{credentials}};
-create_empty($_) for grep { !-e $_ } @creds;
+my @host_rw = map { "$config_dir/$_" } @{$agent_spec->{bind_rw}};
+create_empty($_) for grep { !-e $_ } @host_rw;
 
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
@@ -799,13 +821,25 @@ try_ro("$project_dir/.git/modules");
 bind_ro($proj_agent);
 try_tmp_overlay($_) for @worktree_dirs;
 # The session's agent state, at the path the agent looks for it, plus the
-# state files it looks for elsewhere. Nothing of the host's is mounted there
-# besides the credentials below.
+# state files it looks for elsewhere. Of the host's, only the items the module
+# has bound from it are mounted there, over it.
 bind_rw($state, $config_dir);
 bind_rw("$state/$_->[0]", $_->[1]) for @state_binds;
+# Read-only, over whatever the copy holds at their paths. bwrap follows a link
+# there and refuses a mount point of the other kind; both are the session's
+# doing, and --reseed clears them.
+for my $item (@host_ro) {
+    my $src = host_item($item, 'bound') // next;
+    my $at = "$state/$item";
+    fail(printable($at) . " is a symlink; --reseed removes it") if -l $at;
+    fail(printable($at) . " is " . (-d $at ? "a directory" : "a file") . " where the host's is "
+       . (-d $src ? "a directory" : "a file") . "; --reseed removes it")
+        if -e $at && ((-d $at) xor (-d $src));
+    bind_ro($src);
+}
 # Have to be rw, because of token refreshes. After the state bind, so the
 # host's token is what the agent finds at that path inside it.
-bind_rw($_) for @creds;
+bind_rw($_) for @host_rw;
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");

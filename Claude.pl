@@ -35,7 +35,12 @@ package Claude;
 #   state_files   regular files that must exist in the state dir before it is
 #                 mounted: created empty, mode 0600, when a seed left none;
 #                 refused later when a symlink or not a regular file
-#   credentials   files under config_dir bound rw from the host over the state
+#   bind_ro       items under config_dir bound read-only from the host over
+#                 the state dir at the same path, after it, so a host edit is
+#                 what the session runs; a missing one is skipped. A file
+#                 bound stays the inode it was, so one an editor replaces
+#                 mid-session reads as before until the next start
+#   bind_rw       files under config_dir bound rw from the host over the state
 #                 dir at the same path, after it, so a token refresh in the
 #                 session lands on the host. Created empty on the host when
 #                 missing, since a bind needs its source to exist.
@@ -87,17 +92,18 @@ sub spec {
         # Claude API and OAuth
         hosts => [qw(api.anthropic.com platform.claude.com console.anthropic.com)],
         config_dir => $config_dir,
-        # What the host contributes: the config a host-side claude loads.
-        # Copied, so the session's edits stay its own. Transcripts, history and
-        # everything else are the session's from the start.
-        seed => [qw(settings.json settings.local.json CLAUDE.md mcp.json .mcp.json
-                    keybindings.json statusline-command.sh
-                    commands agents skills output-styles rules workflows themes
-                    plugins hooks scripts)],
+        # What the host contributes: the config a host-side claude loads. What
+        # a session writes, /config, a plugin or skill it installs, is copied,
+        # so its edits stay its own; what the user writes and claude only
+        # reads or runs is the host's. Transcripts, history and everything
+        # else are the session's from the start.
+        seed    => [qw(settings.json settings.local.json skills plugins)],
+        bind_ro => [qw(CLAUDE.md mcp.json .mcp.json keybindings.json statusline-command.sh
+                       commands agents output-styles rules workflows themes hooks scripts)],
         seed_state  => sub { seed_claude_json($claude_json, @_) },
         state_files => ['.claude.json', '.credentials.json'],
         # Bound rw because of OAuth token refreshes.
-        credentials => ['.credentials.json'],
+        bind_rw => ['.credentials.json'],
         state_binds => $from_env ? [] : [['.claude.json', $claude_json]],
         project_dir      => '.claude',
         project_overlays => ['worktrees'],
