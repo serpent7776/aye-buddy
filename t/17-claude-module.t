@@ -30,11 +30,11 @@ subtest 'the spec, with the default config dir' => sub {
     ok +(grep { $_ eq 'settings.json' } @{ $s->{seed} }), 'settings are seeded';
     ok !(grep { $_ eq 'projects' } @{ $s->{seed} }), 'transcripts are not';
     ok !(grep { m{/} } @{ $s->{seed} }), 'seed items are names under the config dir';
-    is $s->{live}, ['hooks', 'scripts'], 'hooks and scripts are the host\'s, seen live';
+    is $s->{bind_ro}, ['hooks', 'scripts'], 'hooks and scripts are the host\'s, bound read-only';
     ok !(grep { $_ eq 'hooks' || $_ eq 'scripts' } @{ $s->{seed} }), 'and not copied';
     ok ref $s->{seed_state} eq 'CODE', 'a seed hook';
     is $s->{state_files}, ['.claude.json', '.credentials.json'];
-    is $s->{credentials}, ['.credentials.json'];
+    is $s->{bind_rw}, ['.credentials.json'], 'the token is bound rw';
     is $s->{state_binds}, [['.claude.json', '/h/.claude.json']], '.claude.json is served beside the dir';
     is $s->{project_dir}, '.claude';
     is $s->{project_overlays}, ['worktrees'];
@@ -136,7 +136,7 @@ subtest 'the module agrees with aye-buddy' => sub {
         'the state dir is mounted at config_dir';
     my ($st) = grep { $a[$_] eq '--bind' && $a[$_ + 2] eq $s->{config_dir} } 0 .. $#a - 2;
     ok defined $st, 'at config_dir';
-    for my $c (@{ $s->{credentials} }) {
+    for my $c (@{ $s->{bind_rw} }) {
         my $f = "$s->{config_dir}/$c";
         ok -e $f, "$c created on the host";
         my ($cr) = grep { $a[$_] eq '--bind' && $a[$_ + 1] eq $f && $a[$_ + 2] eq $f } 0 .. $#a - 2;

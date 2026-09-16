@@ -155,7 +155,7 @@ subtest 'hooks and scripts are bound from the host, read-only, over the state di
     ok !(grep { $_->[0] =~ m{\A\Q$home\E/\.claude/(hooks|scripts)} } rw_binds($r)), 'never rw';
 };
 
-subtest 'a live item the host lacks is not bound' => sub {
+subtest 'an item bound read-only the host lacks is not bound' => sub {
     my $r = run_aye({ files => { 'home/.claude/hooks/h.sh' => 'hook' } });
     is $r->{exit}, 0;
     my $home = setenv_value($r->{argv}, 'HOME');
@@ -163,7 +163,7 @@ subtest 'a live item the host lacks is not bound' => sub {
 };
 
 # The bind follows the link, as the copy does for a seeded item.
-subtest 'a symlinked live item is bound' => sub {
+subtest 'a symlinked read-only item is bound' => sub {
     my $r = run_aye({ files => { 'dotfiles/scripts/s.pl' => 'x' },
                       links => { 'home/.claude/scripts' => '../../dotfiles/scripts' } });
     is $r->{exit}, 0;
@@ -171,7 +171,7 @@ subtest 'a symlinked live item is bound' => sub {
     ok +(grep { $_->[0] eq "$home/.claude/scripts" } bwrap_binds($r->{argv}, '--ro-bind')), 'bound';
 };
 
-subtest 'a live item linked into other projects\' state, or dangling, is not bound' => sub {
+subtest 'an item bound read-only linked into other projects\' state, or dangling, is not bound' => sub {
     my $r = run_aye({ dirs => ['home/.claude/projects/-other'],
                       links => { 'home/.claude/hooks' => 'projects/-other', 'home/.claude/scripts' => 'nowhere' } });
     is $r->{exit}, 0, 'still launches';

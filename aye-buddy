@@ -655,7 +655,7 @@ my $fresh = !-e $state;
 my @seed = @{$agent_spec->{seed}};
 # And what stays the host's: bound from it over the copy, read-only, so an
 # edit there is what the session runs.
-my @live = @{$agent_spec->{live}};
+my @host_ro = @{$agent_spec->{bind_ro}};
 
 # cp -R -H -p is the copy wanted, and the flags are POSIX: recurse, follow
 # the item itself when it is a symlink, as a dotfiles manager leaves it, keep
@@ -767,8 +767,8 @@ flock($lock_fh, LOCK_SH) or fail("cannot re-lock " . printable($lock_file) . ": 
 
 # The host credentials, bound rw below so a token refresh lands on the host;
 # a bind needs its source to exist.
-my @creds = map { "$config_dir/$_" } @{$agent_spec->{credentials}};
-create_empty($_) for grep { !-e $_ } @creds;
+my @host_rw = map { "$config_dir/$_" } @{$agent_spec->{bind_rw}};
+create_empty($_) for grep { !-e $_ } @host_rw;
 
 my (@args, @ll_rw, @ll_ro);
 sub bind_rw  { my ($s, $d) = @_; $d //= $s; push @args, '--bind',        $s, $d; push @ll_rw, $d }
@@ -817,18 +817,18 @@ try_ro("$project_dir/.git/modules");
 bind_ro($proj_agent);
 try_tmp_overlay($_) for @worktree_dirs;
 # The session's agent state, at the path the agent looks for it, plus the
-# state files it looks for elsewhere. Of the host's, only the live items and
-# the credentials are mounted there, over it.
+# state files it looks for elsewhere. Of the host's, only the items the module
+# has bound from it are mounted there, over it.
 bind_rw($state, $config_dir);
 bind_rw("$state/$_->[0]", $_->[1]) for @state_binds;
-# The live items, over whatever the copy holds at their paths.
-for my $item (@live) {
+# Read-only, over whatever the copy holds at their paths.
+for my $item (@host_ro) {
     my $src = host_item($item, 'bound') // next;
     bind_ro($src);
 }
 # Have to be rw, because of token refreshes. After the state bind, so the
 # host's token is what the agent finds at that path inside it.
-bind_rw($_) for @creds;
+bind_rw($_) for @host_rw;
 bind_rw($cache_dir, "$home/.cache");
 try_ro("$home/.gitconfig");
 try_ro("$home/.config/git");

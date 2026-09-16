@@ -28,10 +28,6 @@ package Claude;
 #                 own is never written.
 #   seed          items under config_dir copied into the state dir on the
 #                 first run, and again on --reseed; a missing one is skipped
-#   live          items under config_dir bound from the host over the state
-#                 dir, read-only, so a host edit is what the session runs; a
-#                 missing one is skipped. Dirs: a file bound stays the inode
-#                 it was, and an editor saves a new one
 #   seed_state    sub($build, $project_dir): run once, on the first seed, with
 #                 the state dir being built and the project root. For what a
 #                 plain copy can't do: here, .claude.json with its project map
@@ -39,7 +35,11 @@ package Claude;
 #   state_files   regular files that must exist in the state dir before it is
 #                 mounted: created empty, mode 0600, when a seed left none;
 #                 refused later when a symlink or not a regular file
-#   credentials   files under config_dir bound rw from the host over the state
+#   bind_ro       items under config_dir bound read-only from the host over
+#                 the state dir at the same path, after it, so a host edit is
+#                 what the session runs; a missing one is skipped. Dirs: a file
+#                 bound stays the inode it was, and an editor saves a new one
+#   bind_rw       files under config_dir bound rw from the host over the state
 #                 dir at the same path, after it, so a token refresh in the
 #                 session lands on the host. Created empty on the host when
 #                 missing, since a bind needs its source to exist.
@@ -98,12 +98,12 @@ sub spec {
                     keybindings.json statusline-command.sh
                     commands agents skills output-styles rules workflows themes
                     plugins)],
-        # Run by claude, written by the user, on the host: seen live.
-        live => [qw(hooks scripts)],
+        # Run by claude, written by the user, on the host.
+        bind_ro => [qw(hooks scripts)],
         seed_state  => sub { seed_claude_json($claude_json, @_) },
         state_files => ['.claude.json', '.credentials.json'],
         # Bound rw because of OAuth token refreshes.
-        credentials => ['.credentials.json'],
+        bind_rw => ['.credentials.json'],
         state_binds => $from_env ? [] : [['.claude.json', $claude_json]],
         project_dir      => '.claude',
         project_overlays => ['worktrees'],
