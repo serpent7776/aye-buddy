@@ -484,6 +484,13 @@ fail(printable($project_dir) . " overlaps " . printable($config_dir) . ", where 
 fail(printable($config_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
      "  cache dir at; the $name state there would be covered by it.")
     if under($config_dir, "$home/.cache");
+# Same bind, same last-one-wins: a repo there is below $HOME, so the $HOME guard
+# lets it through, and the cache mount then covers it. AUR helpers clone into
+# ~/.cache, so this is the shape a package build arrives in.
+fail(printable($project_dir) . " is under ~/.cache, which the sandbox binds its own\n" .
+     "  cache dir over; the project would be covered by it.\n" .
+     "  Run aye-buddy from a repository elsewhere instead.")
+    if under($project_dir, "$home/.cache");
 
 # Disallow bind mounts under the config dir and at the state files served
 # outside it, where the session's own copies are mounted, and the agent's

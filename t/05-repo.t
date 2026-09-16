@@ -50,4 +50,15 @@ subtest 'a repo ~/.claude symlinks into is rejected' => sub {
             qr/overlaps .*\/\.claude/);
 };
 
+# ~/.cache is bound last, so a repo under it is covered by that mount rather
+# than by the project bind. Below $HOME and clear of ~/.claude, so neither of
+# the guards above sees it. This is where AUR helpers clone.
+subtest 'a repo at ~/.cache is rejected' => sub {
+    rejects({ repo_name => 'home/.cache' }, qr/is under ~\/\.cache/);
+};
+
+subtest 'a repo under ~/.cache is rejected' => sub {
+    rejects({ repo_name => 'home/.cache/paru/clone/pkg' }, qr/is under ~\/\.cache/);
+};
+
 done_testing;
