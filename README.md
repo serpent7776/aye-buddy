@@ -391,6 +391,11 @@ secrets out of `--keep-env`.
   repo in `~`, a versioned `~/.claude`, or a repo `~/.claude` symlinks into
   would mount the real thing back read-write. Keep the repo elsewhere
   below `$HOME`.
+- **A repo under `~/.cache` is refused.** The sandbox binds its own cache
+  dir over `~/.cache` last, after the project, so a repo there would be
+  covered by that mount rather than by its own bind — the session would
+  see the cache where it expected the project. AUR helpers and some build
+  tools clone into `~/.cache`; move the checkout elsewhere below `$HOME`.
 - **Project-scoped config writes fail.** The project's `.claude/` is
   read-only, so writes there — `.claude/settings.local.json` — fail
   in-session; edit project-scoped config on the host. A project `.claude`
