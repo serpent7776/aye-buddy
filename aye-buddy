@@ -756,6 +756,9 @@ else {
                 or fail("cannot rename " . printable("$stage/$item") . " into place: $!");
         }
         rmdir $stage or fail("cannot remove " . printable($stage) . ": $!");
+        # What sits where the host's are bound: a copy from before they were,
+        # or the mount point bwrap made. Seen only once the host drops the item.
+        remove_path("$state/$_") for @host_ro;
     }
     for my $f (map { "$state/$_" } @{$agent_spec->{state_files}}) {
         fail(printable($f) . " is a symlink; binding it would expose its target") if -l $f;
@@ -822,9 +825,16 @@ try_tmp_overlay($_) for @worktree_dirs;
 # has bound from it are mounted there, over it.
 bind_rw($state, $config_dir);
 bind_rw("$state/$_->[0]", $_->[1]) for @state_binds;
-# Read-only, over whatever the copy holds at their paths.
+# Read-only, over whatever the copy holds at their paths. bwrap follows a link
+# there and refuses a mount point of the other kind; both are the session's
+# doing, and --reseed clears them.
 for my $item (@host_ro) {
     my $src = host_item($item, 'bound') // next;
+    my $at = "$state/$item";
+    fail(printable($at) . " is a symlink; --reseed removes it") if -l $at;
+    fail(printable($at) . " is " . (-d $at ? "a directory" : "a file") . " where the host's is "
+       . (-d $src ? "a directory" : "a file") . "; --reseed removes it")
+        if -e $at && ((-d $at) xor (-d $src));
     bind_ro($src);
 }
 # Have to be rw, because of token refreshes. After the state bind, so the

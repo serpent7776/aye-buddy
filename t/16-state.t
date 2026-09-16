@@ -177,6 +177,34 @@ subtest 'an item bound read-only linked into other projects\' state, or dangling
     ok !(grep { $_->[0] =~ m{\A\Q$home\E/\.claude/(hooks|scripts)\z} } all_mounts($r)), 'neither bound';
 };
 
+# bwrap can't mount a dir over a file or the reverse, and follows a link at
+# the mount point; a session can leave any of those where the host's item is
+# bound, and the start would die in bwrap with nothing said.
+subtest 'a mount point of the other kind, or a link, where a host item is bound is refused' => sub {
+    my @cases = (
+        ['scripts',   sub { open my $fh, '>', shift or die $!; close $fh }, 'home/.claude/scripts/s.pl',
+         qr/scripts is a file where the host's is a directory; --reseed removes it/],
+        ['CLAUDE.md', sub { mkdir shift or die $! },                        'home/.claude/CLAUDE.md',
+         qr/CLAUDE\.md is a directory where the host's is a file; --reseed removes it/],
+        ['hooks',     sub { symlink 'projects', shift or die $! },          'home/.claude/hooks/h.sh',
+         qr/hooks is a symlink; --reseed removes it/],
+    );
+    for my $case (@cases) {
+        my ($item, $leave, $host_file, $why) = @$case;
+        my $r = run_aye({ files => { 'home/.claude/settings.json' => 'v1' } });
+        is $r->{exit}, 0, "$item: a first run";
+        my $s = state_dir($r);
+        $leave->("$s/$item");
+        $r = run_aye({ root => $r->{root}, files => { $host_file => 'x' } });
+        is $r->{exit}, 1, "$item: exits 1 once the host has the item";
+        like $r->{err}, qr/aye-buddy: .*$why/, "$item: says why";
+        is $r->{argv}, [], "$item: bwrap never invoked";
+        $r = run_aye({ root => $r->{root} }, '--reseed');
+        is $r->{exit}, 0, "$item: --reseed clears it";
+        ok !-e "$s/$item" && !-l "$s/$item", "$item: gone";
+    }
+};
+
 # A run that dies halfway through the copy must not leave a dir the next run
 # takes for a seeded one: the build goes under another name until complete.
 subtest 'a failed seed leaves no state dir behind' => sub {
@@ -216,7 +244,7 @@ subtest 'a project whose path ends like the build or lock name keeps its state' 
 
 subtest '--reseed replaces the host-config part and keeps the session\'s own' => sub {
     my $r = run_aye({ files => { 'home/.claude/settings.json' => 'v1',
-                                 'home/.claude/CLAUDE.md' => 'rules',
+                                 'home/.claude/settings.local.json' => 'local',
                                  'home/.claude/skills/one/SKILL.md' => 'skill',
                                  'home/.claude/.claude.json' => 'x' } });
     is $r->{exit}, 0;
@@ -226,12 +254,19 @@ subtest '--reseed replaces the host-config part and keeps the session\'s own' =>
     mkdir "$s/skills/mine" or die $!;
     open my $fh, '>', "$s/skills/mine/SKILL.md" or die $!; print $fh 'made in-session'; close $fh;
     open $fh, '>', "$s/.claude.json" or die $!; print $fh '{"session":1}'; close $fh;
-    unlink "$r->{root}/home/.claude/CLAUDE.md" or die $!;
+    # A copy of hooks/ from before it was bound from the host, and the mount
+    # point bwrap makes for a file item; both show once the host drops the item
+    mkdir "$s/hooks" or die $!;
+    open $fh, '>', "$s/hooks/h.sh" or die $!; print $fh 'old'; close $fh;
+    open $fh, '>', "$s/keybindings.json" or die $!; close $fh;
+    unlink "$r->{root}/home/.claude/settings.local.json" or die $!;
     $r = run_aye({ root => $r->{root}, files => { 'home/.claude/settings.json' => 'v2' } }, '--reseed');
     is $r->{exit}, 0;
     like $r->{err}, qr/\Aaye-buddy: reseeding the sandbox claude state/, 'says so';
     is slurp("$s/settings.json"), 'v2', 'settings replaced';
-    ok !-e "$s/CLAUDE.md", 'a file gone from the host is gone here';
+    ok !-e "$s/settings.local.json", 'a file gone from the host is gone here';
+    ok !-e "$s/hooks", 'an old copy at a bound path is removed';
+    ok !-e "$s/keybindings.json", 'a mount point too';
     ok !-e "$s/skills/mine", 'a session-made skill goes with its dir';
     is slurp("$s/skills/one/SKILL.md"), 'skill', 'the host one is back';
     ok -d "$s/projects", 'transcripts kept';

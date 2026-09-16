@@ -34,6 +34,8 @@ subtest 'the spec, with the default config dir' => sub {
         'what the user writes is the host\'s, bound read-only';
     ok !(grep { $_ eq 'projects' } @{ $s->{seed} }, @{ $s->{bind_ro} }), 'transcripts are neither';
     ok !(grep { m{/} } @{ $s->{seed} }, @{ $s->{bind_ro} }), 'items are names under the config dir';
+    my %seeded = map { $_ => 1 } @{ $s->{seed} };
+    ok !(grep { $seeded{$_} } @{ $s->{bind_ro} }), 'no item is both copied and bound over';
     ok ref $s->{seed_state} eq 'CODE', 'a seed hook';
     is $s->{state_files}, ['.claude.json', '.credentials.json'];
     is $s->{bind_rw}, ['.credentials.json'], 'the token is bound rw';
@@ -123,7 +125,10 @@ subtest 'with CLAUDE_CONFIG_DIR the seed reads .claude.json from there' => sub {
 
 # What aye-buddy builds from the module's answers.
 subtest 'the module agrees with aye-buddy' => sub {
-    my $r = run_aye({ env => { AYE_BUDDY_DEBUG => 1 } }, '-p', 'hi');
+    # Every item bound from the host present there, as a dir: the stub bwrap
+    # doesn't care, and the launcher binds whatever exists
+    my @ro = @{ Claude::spec('/h', {})->{bind_ro} };
+    my $r = run_aye({ env => { AYE_BUDDY_DEBUG => 1 }, dirs => [map { "home/.claude/$_" } @ro] }, '-p', 'hi');
     is $r->{exit}, 0;
     my @a = @{ $r->{argv} };
     my $home = setenv_value(\@a, 'HOME');
@@ -143,6 +148,12 @@ subtest 'the module agrees with aye-buddy' => sub {
         ok -e $f, "$c created on the host";
         my ($cr) = grep { $a[$_] eq '--bind' && $a[$_ + 1] eq $f && $a[$_ + 2] eq $f } 0 .. $#a - 2;
         ok(defined $cr && $cr > $st, "$c bound rw after the state dir");
+    }
+    for my $c (@{ $s->{bind_ro} }) {
+        my $p = "$s->{config_dir}/$c";
+        my ($ro) = grep { $a[$_] eq '--ro-bind' && $a[$_ + 1] eq $p && $a[$_ + 2] eq $p } 0 .. $#a - 2;
+        ok(defined $ro && $ro > $st, "$c bound ro after the state dir");
+        ok !-e state_dir($r) . "/$c", "$c not copied";
     }
     for my $b (@{ $s->{state_binds} }) {
         my ($file, $at) = @$b;
