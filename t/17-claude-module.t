@@ -27,11 +27,13 @@ subtest 'the spec, with the default config dir' => sub {
     is $s->{config_env}, 'CLAUDE_CONFIG_DIR', 'but the name is known either way';
     is $s->{hosts}, ['api.anthropic.com', 'platform.claude.com', 'console.anthropic.com'];
     is $s->{config_dir}, '/h/.claude';
-    ok +(grep { $_ eq 'settings.json' } @{ $s->{seed} }), 'settings are seeded';
-    ok !(grep { $_ eq 'projects' } @{ $s->{seed} }), 'transcripts are not';
-    ok !(grep { m{/} } @{ $s->{seed} }), 'seed items are names under the config dir';
-    is $s->{bind_ro}, ['hooks', 'scripts'], 'hooks and scripts are the host\'s, bound read-only';
-    ok !(grep { $_ eq 'hooks' || $_ eq 'scripts' } @{ $s->{seed} }), 'and not copied';
+    is $s->{seed}, [qw(settings.json settings.local.json skills plugins)],
+        'what a session writes is copied';
+    is $s->{bind_ro}, [qw(CLAUDE.md mcp.json .mcp.json keybindings.json statusline-command.sh
+                          commands agents output-styles rules workflows themes hooks scripts)],
+        'what the user writes is the host\'s, bound read-only';
+    ok !(grep { $_ eq 'projects' } @{ $s->{seed} }, @{ $s->{bind_ro} }), 'transcripts are neither';
+    ok !(grep { m{/} } @{ $s->{seed} }, @{ $s->{bind_ro} }), 'items are names under the config dir';
     ok ref $s->{seed_state} eq 'CODE', 'a seed hook';
     is $s->{state_files}, ['.claude.json', '.credentials.json'];
     is $s->{bind_rw}, ['.credentials.json'], 'the token is bound rw';

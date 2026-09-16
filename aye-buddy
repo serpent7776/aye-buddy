@@ -179,9 +179,10 @@ USAGE
 #     and known_hosts, ro. Opt-in because an agent can't scope a signature to one
 #     destination: the session can have the host agent authenticate to anything
 #     it can reach, for the session's lifetime.
-#   --reseed replaces the host-config part of this project's sandbox state with
-#     a fresh copy from the host. The copy is made once otherwise, so host-side
-#     edits don't reach a project's sandbox until asked for.
+#   --reseed replaces the copied part of this project's sandbox state with a
+#     fresh copy from the host. The copy is made once otherwise, so a host-side
+#     edit to it doesn't reach a project's sandbox until asked for; the rest of
+#     the config is bound from the host and needs no asking.
 Getopt::Long::Configure(qw(require_order pass_through no_auto_abbrev no_ignore_case));
 my $allow_bwrap  = 0;
 my $net_filter   = 1;
